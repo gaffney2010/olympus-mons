@@ -20,11 +20,11 @@ Let's model this.  Implementation 1:
 ```python
 import olympusmons as om
 
-twentyfour = om.Model()
+twentyfour = om.Graph()
 twentyfour.add_variable("turn")
 twentyfour.add_variable("player_1_score")
 twentyfour.add_variable("player_2_score")
-twentyfour.add_state("Turn")
+twentyfour.add_state("Turn", starting=True)
 twentyfour.add_action("Roll")
 
 twentyfour.end_condition = om.om_or(
@@ -34,13 +34,13 @@ twentyfour.end_condition = om.om_or(
 
 twentyfour.transition("Turn", om.transition_constant("Roll"))
 twentyfour.update("Roll", om.update_branch([
-    (om.cond("turn", "eq" "player_1"), {
-        "turn": om.update_constant("player_2"),
-        "player_1_score": os.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
+    (om.cond("turn", "eq" "'player_1'"), {
+        "turn": om.update_constant("'player_2'"),
+        "player_1_score": om.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
     }),
-    (om.cond("turn", "eq" "player_2"), {
-        "turn": om.update_constant("player_1"),
-        "player_2_score": os.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
+    (om.cond("turn", "eq" "'player_2'"), {
+        "turn": om.update_constant("'player_1'"),
+        "player_2_score": om.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
     }),
 ]))
 ```
@@ -49,14 +49,14 @@ Alternatively, we can write the update rule using some syntactic sugar.  Impleme
 
 ```python
 twentyfour.add_pseudovariable("active_player_score", om.if_else(
-    om.cond("turn", "==", "player_1"),
+    om.cond("turn", "==", "'player_1'"),
     "player_1_score",
     "player_2_score",
 ))
 
 twentyfour.update("Roll", om.update_branch({
-    "turn": om.rotate(["player_1", "player_2"]),
-    "active_player_score": os.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
+    "turn": om.rotate(["'player_1'", "'player_2'"]),
+    "active_player_score": om.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
 })
 ```
 
@@ -64,13 +64,23 @@ Now we can simulate a game.
 
 ```python
 twentyfour.sim({
-    "turn": "player_1",
+    "turn": "'player_1'",
     "player_1_score": 0,
     "player_2_score": 0,
 })
 ```
 
 This will return the ending state.  If we want to predict the probability of player_1 winning (given that they go first), we can count ourselves.
+
+If you wish to print the whole simulated game to screen, you can pass the debug argument.
+
+```python
+twentyfour.sim({
+    "turn": "'player_1'",
+    "player_1_score": 0,
+    "player_2_score": 0,
+}, debug="screen")
+```
 
 ```python
 twentyfour.set_default_start_state({
@@ -80,7 +90,7 @@ twentyfour.set_default_start_state({
 
 player_1_wins = 0
 for _ in range(N_SIMS):
-    sim = twentyfour.sim({"turn": "player_1"})
+    sim = twentyfour.sim({"turn": "'player_1'"})
     if sim["player_1_score"] > sim["player_2_score"]:
         player_1_wins += 1
 print(player_1_wins * 1.0 / N_SIMS)
@@ -91,10 +101,10 @@ We could alternatively define this as a two-state Markov chain.  Implementation 
 ```python
 import olympusmons as om
 
-twentyfour = om.Model()
+twentyfour = om.Graph()
 twentyfour.add_variable("player_1_score")
 twentyfour.add_variable("player_2_score")
-twentyfour.add_state("PlayerOneTurn")
+twentyfour.add_state("PlayerOneTurn", starting=True)
 twentyfour.add_action("PlayerOneRoll")
 twentyfour.add_state("PlayerTwoTurn")
 twentyfour.add_action("PlayerTwoRoll")
@@ -106,17 +116,209 @@ twentyfour.end_condition = om.om_or(
 
 twentyfour.transition("PlayerOneTurn", om.transition_constant("PlayerOneRoll"))
 twentyfour.update("PlayerOneRoll", {
-    "player_1_score": os.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
+    "player_1_score": om.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
 })
 twentyfour.transition("PlayerTwoTurn", om.transition_constant("PlayerTwoRoll"))
 twentyfour.update("PlayerTwoRoll", {
-    "player_2_score": os.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
+    "player_2_score": om.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
 })
 ```
 
 Notice that actions have to be globally unique.  So different states necessitate different actions.
 
 Although we CAN define this as two states, should we?  No.  It will be a repeated concern:  When should two states of the game be the same state?  We could, for example, define different nodes for late game vs early game.  OM has enough flexibility to allow this, but we do have an opinion:  **Each state should correspond to a model.**  If it doesn't make sense to do different models, then it doesn't make sense to do different states.  Here the "model" is an untrained uniform-random selection, which makes it easier to copy.  But when you have to train models, the different states will provide different training data.
+
+### Context variables
+
+Context variables are game-level constants.  Though it would be easy to make a different `om.Graph` with a different constant, we sometimes want the same Model with different game-level constants to get trained together.
+
+24 - Version 2
+> Players take turns rolling a 6-sided die.  Both players keep a running total of the values they roll.  The first person to reach `goal` wins, where `goal` is a context variable.
+
+```python
+import olympusmons as om
+
+twentyfour = om.Graph()
+twentyfour.add_context("goal")
+twentyfour.add_variable("turn")
+twentyfour.add_variable("player_1_score")
+twentyfour.add_variable("player_2_score")
+twentyfour.add_pseudovariable("active_player_score", om.if_else(
+    om.cond("turn", "==", "'player_1'"),
+    "player_1_score",
+    "player_2_score",
+))
+twentyfour.add_state("Turn", starting=True)
+twentyfour.add_action("Roll")
+
+twentyfour.end_condition = om.om_or(
+    om.cond("player_1_score", ">=", "goal"),
+    om.cond("player_2_score", ">=", "goal"),
+)
+
+twentyfour.transition("Turn", om.transition_constant("Roll"))
+twentyfour.update("Roll", om.update_branch({
+    "turn": om.rotate(["'player_1'", "'player_2'"]),
+    "active_player_score": om.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
+})
+```
+
+### Modeled behavior
+
+So far, there's been no fitting to data.
+
+24 - Version 3
+> Players take turns.  Each turn they can either roll a 6-sided die, taking their score from the top face, or they can flip 6 coins, taking their score from the number of heads flipped.  Both players keep a running total of the values they roll.  The first person to reach `goal` wins, where `goal` is a context variable.
+
+These are similar choices, but the coin flips are more likely to score around the average value.  It may be a good strategy to choose coins when you're ahead, and dice rolls when you're behind.  However, we don't know a priori if the players will use good strategy.  We will leave it up to the model to learn.
+
+For our first implementation, we'll assume that the player chooses at random.
+
+```python
+import random
+
+import olympusmons as om
+
+twentyfour = om.Graph()
+twentyfour.add_context("goal")
+twentyfour.add_variable("turn")
+twentyfour.add_variable("player_1_score")
+twentyfour.add_variable("player_2_score")
+twentyfour.add_pseudovariable("active_player_score", om.if_else(
+    om.cond("turn", "==", "'player_1'"),
+    "player_1_score",
+    "player_2_score",
+))
+twentyfour.add_state("Turn", starting=True)
+twentyfour.add_action("Flip")
+twentyfour.add_action("Roll")
+
+twentyfour.end_condition = om.om_or(
+    om.cond("player_1_score", ">=", "goal"),
+    om.cond("player_2_score", ">=", "goal"),
+)
+
+class FlipModel(om.Model):
+    def sim(self, _):
+        score = 0
+        for _ in range(6):
+            if random.random() < 0.5:
+                score += 1
+        return score
+
+twentyfour.transition("Turn", om.transition_uniform(["Flip", "Roll"]))
+twentyfour.update("Flip", om.update_branch({
+    "turn": om.rotate(["'player_1'", "'player_2'"]),
+    "active_player_score": om.plus_equal(FlipModel(inputs=[], outputs=["update"])),
+})
+twentyfour.update("Roll", om.update_branch({
+    "turn": om.rotate(["'player_1'", "'player_2'"]),
+    "active_player_score": om.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
+})
+```
+
+`sim` takes an argument, but it still doesn't use anything.  `FlipModel` is an `om.Model`, and so inputs and outputs needs to get specified.  `inputs=[]` means that this doesn't depend on any variables, and `outputs=["update"]` is a special keyword for update models.  The other Updates (`om.uniform` and `om.rotate`) are also Models, but built in.
+
+Next we assume that the decision to Flip or Roll depends on the player's current score and the context.
+
+```python
+import random
+
+import olympusmons as om
+
+twentyfour = om.Graph()
+twentyfour.add_context("goal")
+twentyfour.add_variable("turn")
+twentyfour.add_variable("player_1_score")
+twentyfour.add_variable("player_2_score")
+twentyfour.add_pseudovariable("active_player_score", om.if_else(
+    om.cond("turn", "==", "'player_1'"),
+    "player_1_score",
+    "player_2_score",
+))
+twentyfour.add_state("Turn", starting=True)
+twentyfour.add_action("Flip")
+twentyfour.add_action("Roll")
+
+twentyfour.end_condition = om.om_or(
+    om.cond("player_1_score", ">=", "goal"),
+    om.cond("player_2_score", ">=", "goal"),
+)
+
+class TurnModel(om.Model):
+    def __init__(self, **kwargs):
+        self.model = None
+        super().__init__(**kwargs)
+
+    def sim(self, X):
+        assert(self.model is not None)
+        proba = self.model.predict_proba(X)[0]
+        if random.random() < proba:
+            return self.y_order[0]
+        return self.y_order[1]
+
+    def train(self, X, y)
+        self.model = LogisticRegression().fit(X, y)
+
+class FlipModel(om.Model):
+    def predict(self, _):
+        score = 0
+        for _ in range(6):
+            if random.random() < 0.5:
+                score += 1
+        return score
+
+twentyfour.transition("Turn", TurnModel(inputs=["active_player_score", "goal"], outputs=["Flip", "Roll"]))
+twentyfour.update("Flip", om.update_branch({
+    "turn": om.rotate(["'player_1'", "'player_2'"]),
+    "active_player_score": om.plus_equal(FlipModel()),
+})
+twentyfour.update("Roll", om.update_branch({
+    "turn": om.rotate(["'player_1'", "'player_2'"]),
+    "active_player_score": om.plus_equal(om.uniform([1, 2, 3, 4, 5, 6])),
+})
+```
+
+Notice that `sim` uses self.y_order to determine which Action is in position 0 vs 1.  This is one of many variables that are set in the `__init__` of `om.Graph`; so it's important to still call this, even as we overwrite the child `__init__`.
+
+Now, before we can run simulations, we need to train the model on the data.  For this, we'll use `PandasBulkTrainer`.  This assumes that the data is in a pandas DataFrame.  The "bulk" part means that the `om.Graph` needs to hold all game data in memory at once before training.  This is the only approach that's supported today.
+
+```python
+class TwentyFourGameGenerator(om.PandasBulkTrainer):
+    def get_game(self):
+        all_games = pd.read_sql("select game_id, goal from games;", con=_engine())
+        for _, game in all_games.iterrows():
+            df = pd.read_sql(f"select state, action, player_1_score, player_2_score from data where game_id={game_id};", con=_engine())
+            yield ({"goal": game["goal"]}, df)
+
+twentyfour.train(TwentyFourGameGenerator())
+```
+
+All we need to pass to train is a class with a function that yields (context_dict, df).  That df should represent a full game.  We expect this to have each row be a "turn": state, action-taken, variables at the beginning of the turn.
+
+At this point, we should explain all that's going on.
+
+Train does the following step:
+
+- Check validity of the `om.Graph`.  (See Constraints below.)
+- For each game in the dataset, start at the starting state, and walk through the "turns" (state, action, variables).
+  - Check that the action agrees with the state, and that the exit condition has not been met.
+  - Look at the Transition for the State; check that the Action is in the Transition's outputs.  Record row's inputs with the row's Action
+
+///////
+// Bedtime note:  I need better naming.  "The data", "the row", "input", are all kinda vague.
+
+## Technical details
+
+Constraints:
+
+- Should be exactly 1 starting state and exit condition.
+- Each Action should belong to exactly 1 State.
+- State:Transition is 1:1
+- Action:Update is 1:1
+- [Optional] Graph should be connected, with all states reachable from starting node
+
+Transitions and Updates are all Models, but Update Models use a special "update" output.
 
 ## Comparison to other packages
 
