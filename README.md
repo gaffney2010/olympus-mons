@@ -1,12 +1,107 @@
 # olympus-mons
 
-Olympus Mons (OM) is a continuous Markov Chain library, with modeled transitions and simulated inference.
+// TODO Redo this part
+<!-- Olympus Mons (OM) is a continuous Markov Chain library, with modeled transitions and simulated inference. -->
 
-Models are built with discrete states, actions, and variables.  Transitions and variable changes can be extensibly modeled as a function of state and variables.  At inference time, a set of events will be simulated with modeled behavior.
+<!-- Models are built with discrete states, actions, and variables.  Transitions and variable changes can be extensibly modeled as a function of state and variables.  At inference time, a set of events will be simulated with modeled behavior. -->
 
-OM is designed for ease-of-use.  To that end, simulated data looks exactly like training data.
+<!-- OM is designed for ease-of-use.  To that end, simulated data looks exactly like training data. -->
 
 ## Intro
+
+OM is technically a Mealy machine.  What that means for us is that we have to define a graph by States (nodes) and Actions (edges).
+
+States use Models to decide to which Action to take, and Actions decide which state comes next.
+
+As a starting example, let's look at a simple 3-state setup.
+
+```python
+import olympusmons as om
+
+
+graph = (
+    om.GraphBuilder("Rotate")
+    .State("A", model=om.ConstModel("to_b")).Action("to_b", next_state="B")
+    .State("B", model=om.ConstModel("to_c")).Action("to_c", next_state="C")
+    .State("C", model=om.ConstModel("to_a")).Action("to_a", next_state="A")
+    .set_starting_state("A")
+    .set_end_condition("step >= 5")
+    .build()
+)
+```
+
+This is pretty self-explanatory.  It uses a [builder pattern](https://refactoring.guru/design-patterns/builder).  The most unusual thing here is the end condition.  An end condition is always required.  `step` is a built-in counter that starts at 0 and counts up.  The end condition is encoded as a string rather than a lambda.  The internals of OM uses [SymPy](https://www.sympy.org/en/index.html) to translate into logic.  Handling it this way lets us do certain validity checks, and save/load the graph.
+
+Once we have a graph, we can then run a simulation.
+
+```python
+output = graph.sim(debug="screen")
+```
+
+`output` is a dict that, for now, only contains `{"step": 5}`.  By setting `debug="screen"`, this will print to screen all the intermediate states and actions as a CSV:
+
+```
+state,action,step
+A,to_b,0
+B,to_c,1
+C,to_a,2
+A,to_b,3
+B,to_c,4
+```
+
+Note that `state` and `step` are the values at the begining of the step.
+
+To make this more interesting, we can add some randomness.  We do this with a non-constant Model.
+
+```python
+import random
+
+import olympusmons as om
+
+
+class SplitA(om.Model):
+    def sim(input):
+        if random.random() < 0.5:
+            return "to_b"
+        return "to_c"
+
+
+graph = (
+    om.GraphBuilder("Out and back")
+    .State("A", model=SplitA([])).Action("to_b", next_state="B").Action("to_c", next_state="C")
+    .State("B", model=om.ConstModel("to_a_from_b")).Action("to_a_from_b", next_state="A")
+    .State("C", model=om.ConstModel("to_a_from_c")).Action("to_a_from_c", next_state="A")
+    .set_starting_state("A")
+    .set_end_condition("step >= 5")
+    .build()
+)
+```
+
+A few things to notice:
+
+- The action names must be globally unique, so we added the "from" part this time.
+- Model __init__ takes a list of variables that it's allow to access.  In this example, we don't have any variables, except the `step`.
+- Model has a `sim` function that does simulations.  It takes the parameter `input` which is a dictionary of all the variable values.
+- `sim` returns an Action name
+
+We could have instead made a function that depens on `step` like this:
+
+```python
+class SplitA(om.Model):
+    def sim(input):
+        if random.random() < 0.5 / input["step"]:
+            return "B"
+        return "C"
+
+
+graph = (
+    om.GraphBuilder("Out and back")
+    .State("A", model=SplitA(["step"])).Action("to_b", next_state="B").Action("to_c", next_state="C")
+    ....
+)
+```
+
+om.ConstModel is a Model factory that builds a model like `SplitA` but that always returns a fixed State.  That factory needs to know what the target
 
 ## Example
 
