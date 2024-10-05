@@ -60,7 +60,7 @@ import olympusmons as om
 
 
 class SplitA(om.Model):
-    def sim(input):
+    def sim(self, input):
         if random.random() < 0.5:
             return "to_b"
         return "to_c"
@@ -90,7 +90,7 @@ We could have instead made a function that depens on `step` like this:
 
 ```python
 class SplitA(om.Model):
-    def sim(input):
+    def sim(self, input):
         if random.random() < 0.5 / input["step"]:
             return "B"
         return "C"
@@ -116,14 +116,14 @@ import olympusmons as om
 
 
 class SplitA(om.Model):
-    def sim(input):
+    def sim(self, input):
         if random.random() < (0.5)**input["num_b_visits"]:
             return "to_b"
         return "to_c"
 
 
 class IncNumBVisits(om.Model):
-    def sim(input):
+    def sim(self, input):
         return input["num_b_visits"] + 1
 
 
@@ -175,14 +175,14 @@ import olympusmons as om
 
 
 class SplitA(om.Model):
-    def sim(input):
+    def sim(self, input):
         if random.random() < input["decay_factor"]**input["num_b_visits"]:
             return "to_b"
         return "to_c"
 
 
 class IncNumBVisits(om.Model):
-    def sim(input):
+    def sim(self, input):
         return input["num_b_visits"] + 1
 
 
@@ -227,6 +227,141 @@ for _ in range(N_SIMS):
     num += len(journal.df[journal.df["State"] == "B"])
 print(f"Avg steps in State B: {num / N_SIMS}")
 ```
+
+### Training
+
+Next we'll assume that we don't know what decay_factor is, and fit it.
+
+```python
+import random
+
+import olympusmons as om
+
+
+class SplitA(om.Model):
+    def __init__(self):
+        self.is_fit = False
+        self.decay_factor = None
+        super().__init__(**kwargs)
+
+    def sim(self, input):
+        assert(self.is_fit)
+        if random.random() < self.decay_factor**input["num_b_visits"]:
+            return "to_b"
+        return "to_c"
+
+    def train(self, input, output):
+        count_by_num_b_visits = dict()
+        goto_b_by_num_b_visits = dict()
+        for i, o in zip(input, output):
+            count_by_num_b_visits[i["num_b_visits"]] += 1
+            if "B" == o:
+                goto_b_by_num_b_visits[i["num_b_visits"]] += 1
+
+        self.decay_factor = 0
+        for k, v in goto_b_by_num_b_visits.items():
+            tot = count_by_num_b_visits[k]
+            weight = tot / len(output)
+            self.decay_factor += weight * (v / tot) ** (1/k)
+        self.is_fit = True
+
+
+class IncNumBVisits(om.Model):
+    def sim(self, input):
+        return input["num_b_visits"] + 1
+
+
+trainable_graph = (
+    om.GraphBuilder("Out and back")
+    .set_starting_state("A")
+    .set_end_condition("step >= total_steps")
+    .RegisterModel("SplitA", SplitA)
+    .RegisterModel("IncNumBVisits", IncNumBVisits)
+    .Context("total_steps", default=5)
+    .Variable("num_b_visits", initially=0)
+    .State("A", model=om.UDM("SplitA", input=["num_b_visits"]))
+        .Action("to_b", next_state="B").Action("to_c", next_state="C")
+    ....
+)
+```
+
+Don't worry too much about the math of the `train` function; it's not even a very good model.  But a few things to notice:
+
+- If we add an `__init__` to an `om.Model`, then we _must_ initialize the parent class with super.
+- `train` takes as arguments two equal length lists.  The first, `input`, is a list of dicts that look identical to the input of `sim`.  The second, `output`, is a list of values that look identical to the output of `sim`.
+- We check ourselves if the model is trained before using it.  We saw above that sims can be done without training.  It's up to the application side to determine if that should be allow.
+- Note that `IncNumBVisits` gets "trained" too, but the default `train` function on `om.Model` does nothing.
+
+OM uses a Bring-Your-Own-Model approach.  So any modeling you want to do you have to build yourself.  Often this will just mean wrapping models from sklearn, but we didn't want to depend on that complex, ever-evolving library directly.
+
+Now that you have this graph setup with a trainable model in it, you can provide it data in a training step.  In the example below, we will provide data from DataFrames.  Each DataFrame represents one full simulation.  These DataFrames generally can be obtained from a database or built however you want.  But to make this concrete, we'll provide data from `graph` (our earlier, non-trainable graph) using Journals; don't confuse with `trainable_graph` (our new graph).
+
+```python
+class MyGraphGenerator(om.PandasBulkTrainer):
+    def get_game(self):
+        global graph
+        for _ in range(100):
+            journal = om.Journal()
+            graph.sim(debug=journal, context={"total_steps": 100})
+            yield om.PandasDatum(journal.df, context={"total_steps": 100})
+
+trainable_graph.train(MyGraphGenerator())
+```
+
+A few notes:
+
+- The name PandasBulkTrainer means that the graph must be trained in bulk.  That is all data must be held in memory at the same time.  This is the only supported method right now.  But if your training set is quite large, this could pose problems.
+- Trainers must be generators, meaning that they `yield` simulations as they go.  `MyGraphGenerator` generates 100 total games.
+- Note that you have to specify any non-default context.
+
+### Observation and Saving
+
+After training, we can observe what was learned by looking at `trainable_graph["SplitA"].decay_factor`.  Observing models on updates may be a little more complicated because updates are not typically named.  What we recommend instead is to implement the `describe` function on the Model.
+
+```python
+class SplitA(om.Model):
+    def __init__(self):
+        self.is_fit = False
+        self.decay_factor = None
+        super().__init__(**kwargs)
+
+    ...
+
+    def describe(self):
+        return f"SplitA Model: {self.decay_factor=}"
+```
+
+This may return any string you want, and will be used for various Graph descriptions.
+
+Last you may want to save and load your graph.  This requires that all models have `save` and `load` functions, which write and read jsons.  You must be able to rebuild your model from the `load` function for this to work.
+
+```python
+import json
+
+
+class SplitA(om.Model):
+    def __init__(self):
+        self.is_fit = False
+        self.decay_factor = None
+        super().__init__(**kwargs)
+
+    ...
+
+    def save(self):
+        assert(self.is_fit)
+        pre_json = {"decay_factor": self.decay_factor}
+        return json.dumps(pre_json)
+
+    @staticmethod
+    def load(from_json):
+        post_json = json.loads(from_json)
+        result = SplitA()
+        result.decay_factor = post_json["decay_factor"]
+        result.is_fit = True
+        return result
+```
+
+Note that this doesn't actually save your model, only the json.  If in the loading stage you register a different or newer version of the model with the same name, then this may break your saves.  Compatibility is the application code's concern.
 
 ## NFL
 
