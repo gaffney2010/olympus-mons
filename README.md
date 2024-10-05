@@ -21,12 +21,12 @@ import olympusmons as om
 
 graph = (
     om.GraphBuilder("Rotate")
+    .set_starting_state("A")
+    .set_end_condition("step >= 5")
     .State("A", model=om.ConstModel("to_b")).Action("to_b", next_state="B")
     .State("B", model=om.ConstModel("to_c")).Action("to_c", next_state="C")
     .State("C", model=om.ConstModel("to_a")).Action("to_a", next_state="A")
-    .set_starting_state("A")
-    .set_end_condition("step >= 5")
-    .build()
+    .Build()
 )
 ```
 
@@ -68,13 +68,13 @@ class SplitA(om.Model):
 
 graph = (
     om.GraphBuilder("Out and back")
+    .set_starting_state("A")
+    .set_end_condition("step >= 5")
     .RegisterModel("SplitA", SplitA)
     .State("A", model=om.UDM("SplitA", input=[])).Action("to_b", next_state="B").Action("to_c", next_state="C")
     .State("B", model=om.ConstModel("to_a_from_b")).Action("to_a_from_b", next_state="A")
     .State("C", model=om.ConstModel("to_a_from_c")).Action("to_a_from_c", next_state="A")
-    .set_starting_state("A")
-    .set_end_condition("step >= 5")
-    .build()
+    .Build()
 )
 ```
 
@@ -98,6 +98,7 @@ class SplitA(om.Model):
 
 graph = (
     om.GraphBuilder("Out and back")
+    ....
     .RegisterModel("SplitA", SplitA)
     .State("A", model=SplitA(["step"])).Action("to_b", next_state="B").Action("to_c", next_state="C")
     ....
@@ -128,6 +129,8 @@ class IncNumBVisits(om.Model):
 
 graph = (
     om.GraphBuilder("Out and back")
+    .set_starting_state("A")
+    .set_end_condition("step >= 5")
     .RegisterModel("SplitA", SplitA)
     .RegisterModel("IncNumBVisits", IncNumBVisits)
     .Variable("num_b_visits", initially=0)
@@ -137,9 +140,7 @@ graph = (
         .Action("to_a_from_b", next_state="A").update("num_b_visits", om.UDM("IncNumBVisits", input=["num_b_visits"]))
     .State("C", model=om.ConstModel("to_a_from_c"))
         .Action("to_a_from_c", next_state="A")
-    .set_starting_state("A")
-    .set_end_condition("step >= 5")
-    .build()
+    .Build()
 )
 ```
 
@@ -154,6 +155,7 @@ A few things to note:
 ```python
 graph = (
     om.GraphBuilder("Out and back")
+    ....
     .RegisterModel("SplitA", SplitA)
     .Variable("num_b_visits", initially=0)
     ....
@@ -162,11 +164,77 @@ graph = (
     ....
 ```
 
+### Context and Journals
+
+We may want to run different simulations for different setups.  Say we want to run with different number of steps or change the decay factor, 0.5.  We could create different graphs, but that's too noisy.  We could make variables that we never change, but actually that requires creating a new graph.  For this reason, we create game-level constants, called Contexts.
+
+```python
+import random
+
+import olympusmons as om
+
+
+class SplitA(om.Model):
+    def sim(input):
+        if random.random() < input["decay_factor"]**input["num_b_visits"]:
+            return "to_b"
+        return "to_c"
+
+
+class IncNumBVisits(om.Model):
+    def sim(input):
+        return input["num_b_visits"] + 1
+
+
+graph = (
+    om.GraphBuilder("Out and back")
+    .set_starting_state("A")
+    .set_end_condition("step >= total_steps")
+    .RegisterModel("SplitA", SplitA)
+    .RegisterModel("IncNumBVisits", IncNumBVisits)
+    .Context("total_steps", default=5)
+    .Context("decay_factor", default=0.5, validator="0.0 < decay_factor < 1.0")
+    .Variable("num_b_visits", initially=0)
+    .State("A", model=om.UDM("SplitA", input=["num_b_visits", "decay_factor"]))
+        .Action("to_b", next_state="B").Action("to_c", next_state="C")
+    .State("B", model=om.ConstModel("to_a_from_b"))
+        .Action("to_a_from_b", next_state="A").update("num_b_visits", om.UDM("IncNumBVisits", input=["num_b_visits"]))
+    .State("C", model=om.ConstModel("to_a_from_c"))
+        .Action("to_a_from_c", next_state="A")
+    .Build()
+)
+```
+
+Now we can change Context in the sim function.
+
+```python
+# Run with ten steps
+graph.sim(debug="screen", context={"total_steps": 10})
+# Run with twenty steps
+graph.sim(debug="screen", context={"total_steps": 20})
+```
+
+So far we've only written to screen, but you can also write to a Journal.  After passing a Journal to debug, the Journal will contain a field call `df` with the simulation written as a pandas DataFrame.
+
+Let's say that you want to answer the question:  "What's the expected number of steps spent in State "B" out of the first 100 steps?"
+
+```python
+N_SIMS = 1_000
+num = 0
+for _ in range(N_SIMS):
+    journal = om.Journal()
+    graph.sim(debug=journal, context={"total_steps": 100})
+    num += len(journal.df[journal.df["State"] == "B"])
+print(f"Avg steps in State B: {num / N_SIMS}")
+```
+
 ## NFL
 
 ```python
 graph = (
     om.GraphBuilder("NFL")
+    .set_starting_state("Coin Flip")
+    .set_end_condition("time <= 0")
     .Context("away_team")
     .Context("home_team")
     .Context("away_team_starting_score")
@@ -287,9 +355,7 @@ graph = (
         .Action("PAT-2 Success", next_state="Kick-off")
             .update(["player_1_score", "player_2_score"], om.UDF("UpdateScore", input=["offense", "2"]))
         .Action("PAT-2 Failure", next_state="Kick-off")
-    .set_starting_state("Coin Flip")
-    .set_end_condition("time <= 0")
-    .build()
+    .Build()
 )
 ```
 
@@ -303,7 +369,8 @@ Some notes:
 - Observe how different features are used for different models and how these are kinda intuitive.
 - Notice that we're able to update two variables at once in some places.  The `sim` function must return a tuple, and these Models should not be trained.  "offense_score" as a pseudo-variable is convenient, but recall that we can't set the value of a pseudo-variable.
 - Notice that we have to code literals like PseudoVariable, so that they can be used in `sim` functions.  This is a hack to avoid having to create and register different Models.
-
+- Sometimes we reuse models like "Regression".  Because the graph makes a new instance of this every time it's called, we aren't saying that these different regressions have anything in common.
+- This uses `pre_update` which is short-hand for attaching updates to every incoming action.
 
 There are lots of decisions made here.  For example, I could make "Run" and "Sack" the same with a unified model to predict net yards.  I call a fumble-after-completion a "Fumble" without a "Completion" first.  Different decisions will lead to different models with different performance.  This is an art and a science.
 
