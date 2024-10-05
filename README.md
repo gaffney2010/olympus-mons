@@ -68,7 +68,8 @@ class SplitA(om.Model):
 
 graph = (
     om.GraphBuilder("Out and back")
-    .State("A", model=SplitA([])).Action("to_b", next_state="B").Action("to_c", next_state="C")
+    .RegisterModel("SplitA", SplitA)
+    .State("A", model=om.UDM("SplitA", input=[])).Action("to_b", next_state="B").Action("to_c", next_state="C")
     .State("B", model=om.ConstModel("to_a_from_b")).Action("to_a_from_b", next_state="A")
     .State("C", model=om.ConstModel("to_a_from_c")).Action("to_a_from_c", next_state="A")
     .set_starting_state("A")
@@ -80,7 +81,8 @@ graph = (
 A few things to notice:
 
 - The action names must be globally unique, so we added the "from" part this time.
-- Model __init__ takes a list of variables that it's allow to access.  In this example, we don't have any variables, except the `step`.
+- The SplitA model gets referenced with `UDM` (User-Defined Model), along with input variables.  In this example, we don't have any variables, except the `step`, which isn't used in the model logic.
+- User models need to be "registered", then referenced by name.  Everytime the Model is referenced, a new instance of the model will be created.
 - Model has a `sim` function that does simulations.  It takes the parameter `input` which is a dictionary of all the variable values.
 - `sim` returns an Action name
 
@@ -96,12 +98,214 @@ class SplitA(om.Model):
 
 graph = (
     om.GraphBuilder("Out and back")
+    .RegisterModel("SplitA", SplitA)
     .State("A", model=SplitA(["step"])).Action("to_b", next_state="B").Action("to_c", next_state="C")
     ....
 )
 ```
 
-om.ConstModel is a Model factory that builds a model like `SplitA` but that always returns a fixed State.  That factory needs to know what the target
+om.ConstModel is a Model factory that builds a model like `SplitA` but that always returns a fixed State.  That factory needs to know what the target is.
+
+The power of OM is its ability to encode states as variables.  For this next example, let's assume that the probability of visiting state B from state A is equal to 1/2 raised to number of times B has been previously visited.  We can do this by introducing a variable, `num_b_visits`.
+
+```python
+import random
+
+import olympusmons as om
+
+
+class SplitA(om.Model):
+    def sim(input):
+        if random.random() < (0.5)**input["num_b_visits"]:
+            return "to_b"
+        return "to_c"
+
+
+class IncNumBVisits(om.Model):
+    def sim(input):
+        return input["num_b_visits"] + 1
+
+
+graph = (
+    om.GraphBuilder("Out and back")
+    .RegisterModel("SplitA", SplitA)
+    .RegisterModel("IncNumBVisits", IncNumBVisits)
+    .Variable("num_b_visits", initially=0)
+    .State("A", model=om.UDM("SplitA", input=["num_b_visits"]))
+        .Action("to_b", next_state="B").Action("to_c", next_state="C")
+    .State("B", model=om.ConstModel("to_a_from_b"))
+        .Action("to_a_from_b", next_state="A").update("num_b_visits", om.UDM("IncNumBVisits", input=["num_b_visits"]))
+    .State("C", model=om.ConstModel("to_a_from_c"))
+        .Action("to_a_from_c", next_state="A")
+    .set_starting_state("A")
+    .set_end_condition("step >= 5")
+    .build()
+)
+```
+
+A few things to note:
+
+- Since the code got bigger, I used tabbing to help with readability.
+- Now that `SplitA` uses "num_b_visits", that has to be passed into A's State setup.  This tells the graph to pass this as part of the `input` dict.
+- Update models like `IncNumBVisits` are also Model types, but they return values rather than Actions.
+
+`IncNumBVisits` is a common enough pattern that it has a built-in factory.
+
+```python
+graph = (
+    om.GraphBuilder("Out and back")
+    .RegisterModel("SplitA", SplitA)
+    .Variable("num_b_visits", initially=0)
+    ....
+    .State("B", model=om.ConstModel("to_a_from_b"))
+        .Action("to_a_from_b", next_state="A").update("num_b_visits", om.IncModel("num_b_visits"))
+    ....
+```
+
+## NFL
+
+```python
+graph = (
+    om.GraphBuilder("NFL")
+    .Context("away_team")
+    .Context("home_team")
+    .Context("away_team_starting_score")
+    .Context("home_team_starting_score")
+    .RegisterModel...
+    .Variable("down", initially=None)
+    .Variable("yards_to_td", initially=None)
+    .Variable("first_down_line", initialy=None)
+    .Variable("time", initially=60*30)
+    .Variable("offense", initally=None)
+    .Variable("away_team_score")
+    .Variable("home_team_score")
+    .PseudoVariable("offense_is_home", "1 if offense == home_team else 0")
+    .PseudoVariable("defence", "away_team if offense == home_team else home_team")
+    .PseudoVariable("offense_score", "away_team_score if offense == away_team else home_team")
+    .PseudoVariable("defence_score", "away_team_score if defence == away_team else home_team")
+    .PseudoVariable("offense_net_score", "offense_score - defence_score")
+    .PseudoVariable("yards_to_first", "yards_to_td - first_down_line")
+    .PseudoVariable("-2", "-2").PseudoVariable("1", "1").PseudoVariable("3", "3").PseudoVariable("6", "6")
+    .State("Coin Flip", model=om.Constant("Coin Flip Winner"))
+        .Action("Coin Flip Winner", next_state="Kick-Off")
+            .update("offense", om.UDF("CoinFlipResult", input=[])
+            .update("away_team_score", om.Equal("away_team_starting_score"))
+            .update("home_team_score", om.Equal("home_team_starting_score"))
+    .State("Kick-Off", model=om.Constant("Kick-Off Return"))
+        .pre_update(["offense", "yards_to_td"], om.UDF("TurnOverLogic", input=["away_team", "home_team", "yards_to_td"]))
+        .Action("Kick-Off Return", next_state="Down")
+            .update("down", om.Constant(0))
+            .update("yards_to_td", om.UDF("Regression", input=["offense", "defence", "offense_is_home"]))
+            .update("first_down_line", om.UDF("YardsPlusTen", input=["yards_to_td"])
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+    .State("Pre-Down", model=om.UDF("DetermineWhichDown", input=["down", "yard"]))
+        # Adds 1 down, calculates if first down, fourth down, or a turnover
+        .pre_update(["down", "first_down_line", "offense"], om.UDF("DownCalculator", input=["down", "yards_to_td", "offense"]))
+        .Action("Down from Pre-Down", next_state="Down")
+        .Action("Fourth Down Decision from Pre-Down", next_state="Fourth Down Decision")
+        .Action("Touchdown from Pre-Down", next_state="Point After Decision")
+    .State("Down", model=om.UDF("RandomForest", input=["offense", "defence", "down", "yards_to_td", "yards_to_first", "offense_net_score", "offense_is_home"])
+        .Action("Pass", next_state="In the air")
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Run", next_state="Pre-Down")
+            .update("yards_to_td", om.Plus("yards_to_td", om.UDF("Non-Parametric", input=["offense", "defence"])))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Sack", next_state="Pre-Down")
+            .update("yards_to_td", om.Plus("yards_to_td", om.UDF("Non-Parametric", input=["offense", "defence"])))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Fumble", next_state="Live Ball")
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        # We will combine these into the previous play.
+        # .Action("PenaltyRedoDown", next_state="Pre-Down")
+        #     .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Safety", next_state="Kick-Off")
+            .update(["player_1_score", "player_2_score"], om.UDF("UpdateScore", input=["offense", "-2"])
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+    .State("In the air", model=om.UDF("Regression", input=["offense", "defence", "offense_is_home"])
+        .Action("Completion", next_state="Pre-Down")
+            .update("yards_to_td", om.Plus("yards_to_td", om.UDF("Non-Parametric", input=["offense", "defence"])))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Incomplete", next_state="Pre-Down")
+            .update("yards_to_td", om.Plus("yards_to_td", om.UDF("Non-Parametric", input=["offense", "defence"])))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Interception", next_state="Pre-Down")
+            .update("yards_to_td", om.Plus("yards_to_td", om.UDF("Non-Parametric", input=["offense", "defence"])))
+            .update(["offense", "yards_to_td"], om.UDF("TurnOverLogic", input=["away_team", "home_team", "yards_to_td"]))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Fumble After Completion", next_state="Live Ball")
+            # We will sum the net yards before an afte the completion
+            .update("yards_to_td", om.Plus("yards_to_td", om.UDF("Non-Parametric", input=["offense", "defence"])))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+    .State("Live Ball", model=om.UDF("Regression", input=["offense", "defence", "offense_is_home"])
+        .Action("Recovery", next_state="Pre-Down")
+            .update("yards_to_td", om.Plus("yards_to_td", om.UDF("Non-Parametric", input=["offense", "defence"])))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Turn-Over", next_state="Pre-Down")
+            .update("yards_to_td", om.Plus("yards_to_td", om.UDF("Non-Parametric", input=["offense", "defence"])))
+            .update(["offense", "yards_to_td"], om.UDF("TurnOverLogic", input=["away_team", "home_team", "yards_to_td"]))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        # If there are multiple fumbles, just count them as 1.
+    .State("Fourth Down Decision", model=om.UDF("RandomForest", input=["offense", "yards_to_first", "offense_net_score", "time"])
+        .Action("Punt", next_state="Down")
+            .update("yards_to_td", om.Plus("yards_to_td", om.UDF("Non-Parametric", input=["offense", "defence"])))
+            .update(["offense", "yards_to_td"], om.UDF("TurnOverLogic", input=["away_team", "home_team", "yards_to_td"]))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Field Goal", next_state="Field Goal Attempt")
+        .Action("Go for it", next_state="Fourth Down")
+    .State("Field Goal Attempt", model=om.UDF("Non-Parametric", input=["yards_to_td", "offense"])
+        .Action("FG Success", next_state="Kick-Off")
+            .update(["player_1_score", "player_2_score"], om.UDF("UpdateScore", input=["offense", "3"]))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("FG Miss", next_state="Down")
+            .update("down", om.Constant(0)))
+            .update("yards_to_td", om.UDF("KickOffReturnYard", input=["offense", "defence"]))
+            .update(["offense", "yards_to_td"], om.UDF("TurnOverLogic", input=["away_team", "home_team", "yards_to_td"]))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+    .State("Fourth Down", model=om.UDF("RandomForest", input=["offense", "defence", "down", "offense_net_score"]))
+        .Action("Make it", next_state="Down") 
+            .update("down", om.Constant(0)))
+            .update("yards_to_td", om.UDF("KickOffReturnYard", input=["offense", "defence"]))
+            .update("first_down_line", om.UDF("YardsPlusTen", input=["yards_to_td"]))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("FD Touchdown", next_state="Point After Decision") 
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+        .Action("Turn-Over on Downs", next_state="Down")
+            .update("down", om.Plus(om.Constant(1), "1"))
+            .update("yards_to_td", om.UDF("KickOffReturnYard", input=["offense", "defence"]))
+            .update(["offense", "yards_to_td"], om.UDF("TurnOverLogic", input=["away_team", "home_team", "yards_to_td"]))
+            .update("time", om.Plus("time", om.UDF("Non-Parametric", input=[])))
+    .State("Point After Decision", model=om.UDF("Regression", input=["offense", "offense_net_score", "time"]))
+        .pre_update(["player_1_score", "player_2_score"], om.UDF("UpdateScore", input=["offense", "6"])
+        .Action("Decide PAT", next_state="PAT")
+        .Action("Decide PAT-2", next_state="PAT-2")
+    .State("PAT", model=om.UDF("Regression", input=["offense", "offense_is_home"]))
+        # We have to throw away PAT safeties, it's just too much, I'm sorry.
+        .Action("PAT Success", next_state="Kick-off")
+            .update(["player_1_score", "player_2_score"], om.UDF("UpdateScore", input=["offense", "1"]))
+        .Action("PAT Failure", next_state="Kick-off")
+    .State("PAT-2", model=om.UDF("Regression", input=["offense", "defence", "offense_is_home"]))
+        .Action("PAT-2 Success", next_state="Kick-off")
+            .update(["player_1_score", "player_2_score"], om.UDF("UpdateScore", input=["offense", "2"]))
+        .Action("PAT-2 Failure", next_state="Kick-off")
+    .set_starting_state("Coin Flip")
+    .set_end_condition("time <= 0")
+    .build()
+)
+```
+
+The code here is complex, because the graph we designed is complex.  The GraphBuilder is [DAMP](https://testing.googleblog.com/2019/12/testing-on-toilet-tests-too-dry-make.html) by design.
+
+Some notes:
+
+- Because football has two half, we simulate the halves each as their own game with the use of the starting_score Context variables, and use the coin flip to load these in.
+- PseudoVariables may depend on other PseudoVariables.  The order they're written here determines evaluation order.
+- I need forking logic to decide if I should travel to the `Down` or the `FourthDown` state.  I implement a special state for this.  I can also check for touchdowns and first downs with this logic step.  The tricky thing about pretend states like this is that we have to record these into the training data, but an error will be raised if you forget.
+- Observe how different features are used for different models and how these are kinda intuitive.
+- Notice that we're able to update two variables at once in some places.  The `sim` function must return a tuple, and these Models should not be trained.  "offense_score" as a pseudo-variable is convenient, but recall that we can't set the value of a pseudo-variable.
+- Notice that we have to code literals like PseudoVariable, so that they can be used in `sim` functions.  This is a hack to avoid having to create and register different Models.
+
+
+There are lots of decisions made here.  For example, I could make "Run" and "Sack" the same with a unified model to predict net yards.  I call a fumble-after-completion a "Fumble" without a "Completion" first.  Different decisions will lead to different models with different performance.  This is an art and a science.
 
 ## Example
 
