@@ -1,3 +1,6 @@
+from collections import defaultdict
+
+
 State = str
 Action = str
 
@@ -8,14 +11,31 @@ class OMError(AssertionError):
 
 class Model(object):
     def __init__(self):
+        self._om_model_args = {}
         self._om_model_id = None
+        self.trainable = False
+        self.class_name = "Default"
+
+    def sim(self, input):
+        raise OMError("Model {self.class_name} must implement sim().  (Set self.class_name for better debugging.)")
+
+    def train(self, input):
+        if self.trainable:
+            raise OMError("Model {self.class_name} must implement train().  (Set self.class_name for better debugging.)")
 
 
 class ConstModel(Model):
-    def __init__(self, action: Action):
+    def __init__(self, action: Action = None):
+        if not action:
+            raise OMError("ConstModel must specify an action")
         self.action = action
         super().__init__()
+        self.class_name = "ConstModel"
         self._om_model_id = "ConstModel"
+        self._om_model_args = {"action": action}
+
+    def sim(self, input):
+        return self.action
 
 
 class Graph(object):
@@ -32,35 +52,44 @@ class GraphBuilder(object):
         self.mode_detail = None
 
         self.starting_state = None
+        self.end_condition = None
+
         self.states = list()
+        self.reachable_actions_from_state = defaultdict(list)
         self.model_registry = dict()
         self.models_by_state = dict()
+        self.model_args_by_state = dict()
+        self.next_state_by_action = dict()
 
     def _mode(self, probe: str, probe_detail: str = "") -> None:
         needed_mode = {
             "set_starting_state": "Initial",
+            "set_end_condition": "Initial",
+            "Action": "State",
         }
         if probe in needed_mode and needed_mode[probe] != self.mode:
             raise OMError(f"Can't run function {probe} in {self.mode} mode.")
 
-        capital_letters = [
-            "State",
-        ]
-        if probe in capital_letters:
+        if probe == "State":
             self.mode = probe
             self.mode_detail = probe_detail
+
+        if probe == "Action":
+            self.mode = probe
+            self.mode_detail = [self.mode_detail, probe_detail]
     
     def _set_state_model(self, state: State, model: Model) -> None:
         if not isinstance(model, str) and not isinstance(model, Model):
             raise OMError(f"Model for State {state} must be a string or a Model")
-        
+
         if isinstance(model, Model): 
-            if model not in self.model_registry:
-                if model._om_model_id:
-                    self.model_registry[model._om_model_id] = model
-                    model = model._om_model_id
-                else:
-                    raise OMError(f"UDM {model.name} must be registered and referred to by name")
+            if model._om_model_id:
+                self.model_args_by_state[state] = model._om_model_args
+                if model not in self.model_registry:
+                    self.model_registry[model._om_model_id] = model.__class__
+                model = model._om_model_id
+            else:
+                raise OMError(f"UDM {model.name} must be registered and referred to by name")
         
         if model not in self.model_registry:
             raise OMError(f"UDM {model} is not registered")
@@ -72,19 +101,48 @@ class GraphBuilder(object):
         self.starting_state = starting_state
         return self
 
-    def State(self, name: State, **kwargs) -> "GraphBuilder":
+    def set_end_condition(self, end_condition: str) -> "GraphBuilder":
+        self._mode("set_end_condition")
+        self.end_condition = end_condition
+        return self
+
+    def State(self, state: State, **kwargs) -> "GraphBuilder":
         self._mode("State")
-        self.states.append(name)
+        self.states.append(state)
 
         if "model" not in kwargs:
-            raise OMError(f"State {name} doesn't specify a model")
-        self._set_state_model(name, kwargs["model"])
+            raise OMError(f"State {state} doesn't specify a model")
+        self._set_state_model(state, kwargs["model"])
+        if "model_args" in kwargs:
+            self.model_args_by_state[state] = kwargs["model_args"]
+
+        return self
+        
+    def Action(self, action: Action, **kwargs) -> "GraphBuilder":
+        self._mode("Action")
+
+        self.reachable_actions_from_state[self.mode_detail[0]].append(action)
+
+        if "next_state" not in kwargs:
+            raise OMError(f"Action {action} doesn't specify a next_state")
+        self.next_state_by_action[action] = kwargs["next_state"]
 
         return self
 
-    def Build(self) -> Graph:
+    def Build(self, **kwargs) -> Graph:
         if self.starting_state not in self.states:
             raise OMError(f"Starting state {self.starting_state} is not in states: {self.states}")
+        for k, v in self.next_state_by_action.items():
+            if v not in self.states:
+                raise OMError(f"Next state {v} specified by Action {k} is not in states: {self.states}")
+
+        # We want to make sure that the models all return the correct values
+        n_sims = kwargs.get("n_sims", 100)
+        for _ in range(n_sims):
+            for state, model in self.models_by_state.items():
+                result_action = self.model_registry[model](**self.model_args_by_state.get(state, dict())).sim(dict())
+                if result_action not in self.reachable_actions_from_state[state]:
+                    raise OMError(f"Model for State {state} returns Action {result_action} that is not reachable")
 
         return Graph(
             name=self.name,

@@ -59,9 +59,39 @@ class TestGraphBuilder(unittest.TestCase):
                 .Build()
             )
 
+    def test_action_specifies_next_state(self):
+        with self.assertRaisesRegex(om.OMError, "Action A doesn't specify a next_state"):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("A")
+                .Build()
+            )
+    
+    def test_action_specifies_valid_next_state(self):
+        with self.assertRaisesRegex(om.OMError, "Next state non-state specified by Action bad-action is not in states: \['A'\]"):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("bad-action", next_state="non-state")
+                .Build()
+            )
+
+    def test_state_model_reaches_reachable_actions(self):
+        with self.assertRaisesRegex(om.OMError, "Model for State A returns Action to_b that is not reachable"):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .State("A", model=om.ConstModel("to_b"))
+                .Action("to_a", next_state="A")
+                .Build()
+            )
+
     def test_fail_this_test(self):
         with self.assertRaisesRegex(om.OMError, "X"):
-            print("HELLO")
+            _ = "HELLO"
 
 
 if __name__ == '__main__':
