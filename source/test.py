@@ -115,7 +115,7 @@ class TestGraphBuilder(unittest.TestCase):
         class Regression(om.Model):
             pass
 
-        with self.assertRaisesRegex(om.OMError, "UDM Regression must define input"):
+        with self.assertRaisesRegex(om.OMError, "UDM Regression must specify an input"):
             _ = (
                 om.GraphBuilder("TEST")
                 .set_starting_state("A")

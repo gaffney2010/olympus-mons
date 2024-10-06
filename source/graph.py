@@ -98,19 +98,9 @@ class Graph(object):
         self.model_metadata_by_state = kwargs["model_metadata_by_state"]
         self.next_state_by_action = kwargs["next_state_by_action"]
 
-        self.materialized_models_by_state = dict()
-        self._materialize_models()
+        self.materialized_models_by_state = kwargs["materialized_models_by_state"]
 
         # self.steps = None
-
-    def _materialize_models(self) -> None:
-        for state, model_metadata in self.model_metadata_by_state.items():
-            model = self.model_registry[model_metadata.name]
-            self.materialized_models_by_state[state] = model(
-                model_metadata.name,
-                model_metadata.input,
-                **model_metadata.model_args,
-            )
 
     def draw(self) -> None:
         G = nx.DiGraph()
@@ -181,7 +171,17 @@ class GraphBuilder(object):
         self.reachable_actions_from_state = defaultdict(list)
         self.model_registry = dict()
         self.model_metadata_by_state = dict()
+        self.materialized_models_by_state = dict()
         self.next_state_by_action = dict()
+
+    def _materialize_models(self) -> None:
+        for state, model_metadata in self.model_metadata_by_state.items():
+            model = self.model_registry[model_metadata.name]
+            self.materialized_models_by_state[state] = model(
+                model_metadata.name,
+                model_metadata.input,
+                **model_metadata.model_args,
+            )
 
     def _mode(self, probe: str, probe_detail: str = "") -> None:
         needed_mode = {
@@ -268,21 +268,22 @@ class GraphBuilder(object):
                     f"Next state {v} specified by Action {k} is not in states: {self.states}"
                 )
 
+        self._materialize_models()
+
         # We want to make sure that the models all return the correct values
         n_sims = kwargs.get("n_sims", 100)
         for _ in range(n_sims):
             for state, model_metadata in self.model_metadata_by_state.items():
-                if not model_metadata.trainable:
-                    model = self.model_registry[model_metadata.name](
-                        model_metadata.name,
-                        model_metadata.input,
-                        **model_metadata.model_args,
+                if model_metadata.trainable:
+                    # Can't really check these ones
+                    continue
+
+                model = self.materialized_models_by_state[state]
+                result_action = model.sim(input=dict())
+                if result_action not in self.reachable_actions_from_state[state]:
+                    raise OMError(
+                        f"Model for State {state} returns Action {result_action} that is not reachable"
                     )
-                    result_action = model.sim(input=dict())
-                    if result_action not in self.reachable_actions_from_state[state]:
-                        raise OMError(
-                            f"Model for State {state} returns Action {result_action} that is not reachable"
-                        )
 
         return Graph(
             name=self.name,
@@ -293,4 +294,5 @@ class GraphBuilder(object):
             model_registry=self.model_registry,
             model_metadata_by_state=self.model_metadata_by_state,
             next_state_by_action=self.next_state_by_action,
+            materialized_models_by_state=self.materialized_models_by_state,
         )
