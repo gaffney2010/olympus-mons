@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Union
 
 import matplotlib.pyplot as plt
 import networkx as nx
+import pandas as pd
 import sympy
 
 
@@ -14,6 +15,12 @@ ActionOrVariable = Union[Action, VariableValue]
 
 class OMError(AssertionError):
     pass
+
+
+class Journal(object):
+    def __init__(self):
+        self.df = None
+        self.raw = None
 
 
 class Model(object):
@@ -74,7 +81,7 @@ class Graph(object):
         self.materialized_models_by_state = dict()
         self._materialize_models()
 
-        self.steps = None
+        # self.steps = None
     
     def _materialize_models(self) -> None:
         for state, model_name in self.models_by_state.items():
@@ -102,14 +109,35 @@ class Graph(object):
         plt.show()
 
     def sim(self, **kwargs) -> Dict:
+        data_cols = ["State", "Action", "step"] + []
+        body = {k: [] for k in data_cols}
+
         working_state = self.starting_state
         variables = {"step": 0}
         while not evaluate(self.end_condition, variables):
             restricted_variables = {k: v for k, v in variables.items()}
             working_action = self.materialized_models_by_state[working_state].sim(input=restricted_variables)
 
+            # Record data before we change state or variables
+            body["State"].append(working_state)
+            body["Action"].append(working_action)
+            body["step"].append(variables["step"])
+
+            # Change state
             working_state = self.next_state_by_action[working_action]
-            break
+
+            # Change variables
+            variables["step"] += 1
+
+        if kwargs.get("debug"):
+            if kwargs.get("debug") == "screen":
+                print(",".join(data_cols))
+                for i in range(len(body["State"])):
+                    print(",".join([str(body[k][i]) for k in data_cols]))
+
+            if isinstance(kwargs.get("debug"), Journal):
+                kwargs.get("debug").df = pd.DataFrame(body, columns=data_cols)
+                kwargs.get("debug").raw = body
 
         return variables
 
@@ -218,7 +246,7 @@ class GraphBuilder(object):
                 model = self.model_registry[model_name](
                     **self.model_args_by_state.get(state, dict())
                 )
-                if model.trainable:
+                if not model.trainable:
                     result_action = model.sim(input=dict())
                     if result_action not in self.reachable_actions_from_state[state]:
                         raise OMError(

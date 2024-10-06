@@ -18,5 +18,7 @@ graph = (
 
 print("HELLO WORLD")
 print(graph.name)
-print(graph.sim())
+journal = om.Journal()
+print(graph.sim(debug=journal))
+print(journal.df)
 # graph.draw()

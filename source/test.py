@@ -4,6 +4,29 @@ import graph as om
 
 
 class TestGraphBuilder(unittest.TestCase):
+
+    def test_happy_path_deterministic_no_variables(self):
+        graph = (
+            om.GraphBuilder("Rotate")
+            .set_starting_state("A")
+            .set_end_condition("step >= 5")
+            .State("A", model=om.ConstModel("to_b"))
+            .Action("to_b", next_state="B")
+            .State("B", model=om.ConstModel("to_c"))
+            .Action("to_c", next_state="C")
+            .State("C", model=om.ConstModel("to_a"))
+            .Action("to_a", next_state="A")
+            .Build()
+        )
+
+        journal = om.Journal()
+        final_state = graph.sim(debug=journal)
+        self.assertDictEqual(final_state, {"step": 5})
+        self.assertListEqual(journal.raw["State"], ["A", "B", "C", "A", "B"])
+        self.assertListEqual(journal.raw["Action"], ["to_b", "to_c", "to_a", "to_b", "to_c"])
+        self.assertListEqual(journal.raw["step"], [0, 1, 2, 3, 4])
+        self.assertEqual(len(journal.raw), 3)
+
     def test_set_starting_state_in_initial_mode(self):
         with self.assertRaisesRegex(
             om.OMError, "Can't run function set_starting_state in State mode."
