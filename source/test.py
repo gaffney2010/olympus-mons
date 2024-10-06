@@ -4,7 +4,6 @@ import graph as om
 
 
 class TestGraphBuilder(unittest.TestCase):
-
     def test_happy_path_deterministic_no_variables(self):
         graph = (
             om.GraphBuilder("Rotate")
@@ -23,7 +22,9 @@ class TestGraphBuilder(unittest.TestCase):
         final_state = graph.sim(debug=journal)
         self.assertDictEqual(final_state, {"step": 5})
         self.assertListEqual(journal.raw["State"], ["A", "B", "C", "A", "B"])
-        self.assertListEqual(journal.raw["Action"], ["to_b", "to_c", "to_a", "to_b", "to_c"])
+        self.assertListEqual(
+            journal.raw["Action"], ["to_b", "to_c", "to_a", "to_b", "to_c"]
+        )
         self.assertListEqual(journal.raw["step"], [0, 1, 2, 3, 4])
         self.assertEqual(len(journal.raw), 3)
 
@@ -56,28 +57,10 @@ class TestGraphBuilder(unittest.TestCase):
             )
 
     def test_state_model_is_string_or_model(self):
-        with self.assertRaisesRegex(
-            om.OMError, "Model for State A must be a string or a Model"
-        ):
+        with self.assertRaisesRegex(om.OMError, "Model for State A must be a Model"):
             _ = (
                 om.GraphBuilder("TEST")
                 .State("A", model=1)
-                .set_starting_state("A")
-                .Build()
-            )
-
-    def test_state_model_cannot_be_udm(self):
-        class my_udm(om.Model):
-            def __init__(self):
-                self.name = "my_udm"
-                super().__init__()
-
-        with self.assertRaisesRegex(
-            om.OMError, "UDM my_udm must be registered and referred to by name"
-        ):
-            _ = (
-                om.GraphBuilder("TEST")
-                .State("A", model=my_udm())
                 .set_starting_state("A")
                 .Build()
             )
@@ -87,7 +70,7 @@ class TestGraphBuilder(unittest.TestCase):
             _ = (
                 om.GraphBuilder("TEST")
                 .set_starting_state("A")
-                .State("A", model="SomeUnknownUDM")
+                .State("A", model=om.UDM("SomeUnknownUDM", input=[]))
                 .Build()
             )
 
@@ -124,6 +107,20 @@ class TestGraphBuilder(unittest.TestCase):
                 om.GraphBuilder("TEST")
                 .set_starting_state("A")
                 .State("A", model=om.ConstModel("to_b"))
+                .Action("to_a", next_state="A")
+                .Build()
+            )
+
+    def test_udm_must_define_input(self):
+        class Regression(om.Model):
+            pass
+
+        with self.assertRaisesRegex(om.OMError, "UDM Regression must define input"):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .RegisterModel("Regression", Regression)
+                .State("A", model=om.UDM("Regression"))
                 .Action("to_a", next_state="A")
                 .Build()
             )

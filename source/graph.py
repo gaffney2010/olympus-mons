@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -24,36 +24,57 @@ class Journal(object):
 
 
 class Model(object):
-    def __init__(self):
-        self._om_model_args = {}
-        self._om_model_id = None
-        self.trainable = False
-        self.class_name = "Default"
+    def __init__(self, name: str = "Default", input: Optional[List] = None, **kwargs):
+        self.input = input or dict()
+        self.name = name
+        self.trainable = kwargs.get("trainable", False)
 
     def sim(self, input: Dict) -> ActionOrVariable:
-        raise OMError(
-            "Model {self.class_name} must implement sim().  (Set self.class_name for better debugging.)"
-        )
+        raise OMError("Model {self.name} must implement sim().")
 
     def train(self, inputs: List[Dict], outputs: List[ActionOrVariable]) -> None:
         if self.trainable:
-            raise OMError(
-                "Model {self.class_name} must implement train().  (Set self.class_name for better debugging.)"
-            )
+            raise OMError("Model {self.name} must implement train().")
 
 
-class ConstModel(Model):
-    def __init__(self, action: Action = None):
-        if not action:
+class ModelMetadata(object):
+    def __init__(self, name: str):
+        self.name = name
+        self.trainable = False
+        self._om_model_id = None
+        self.model_args = dict()
+
+
+class ConstModelImpl(Model):
+    def __init__(self, name, input: Optional[List] = None, **kwargs):
+        if "action" not in kwargs:
             raise OMError("ConstModel must specify an action")
-        self.action = action
-        super().__init__()
-        self.class_name = "ConstModel"
-        self._om_model_id = "ConstModel"
-        self._om_model_args = {"action": action}
+        self.action = kwargs["action"]
+        super().__init__(name=name, input=input, **kwargs)
 
     def sim(self, input: Dict) -> ActionOrVariable:
         return self.action
+
+
+class ConstModel(ModelMetadata):
+    def __init__(self, action: Action = None, **kwargs):
+        if not action:
+            raise OMError("ConstModel must specify an action")
+        self.action = action
+        self.input = list()
+        super().__init__("ConstModel")
+        self._om_model_id = "ConstModel"
+        self._om_class = ConstModelImpl
+        self.model_args = {"action": action}
+
+
+class UDM(ModelMetadata):
+    def __init__(self, name: str, **kwargs):
+        if "input" not in kwargs:
+            raise OMError(f"UDM {name} must specify an input")
+        self.input = kwargs["input"]
+        super().__init__(name)
+        self.model_args.update(kwargs.get("model_args", {}))
 
 
 def evaluate(expr, values):
@@ -74,19 +95,22 @@ class Graph(object):
         self.states = kwargs["states"]
         self.reachable_actions_from_state = kwargs["reachable_actions_from_state"]
         self.model_registry = kwargs["model_registry"]
-        self.models_by_state = kwargs["models_by_state"]
-        self.model_args_by_state = kwargs["model_args_by_state"]
+        self.model_metadata_by_state = kwargs["model_metadata_by_state"]
         self.next_state_by_action = kwargs["next_state_by_action"]
 
         self.materialized_models_by_state = dict()
         self._materialize_models()
 
         # self.steps = None
-    
+
     def _materialize_models(self) -> None:
-        for state, model_name in self.models_by_state.items():
-            model = self.model_registry[model_name]
-            self.materialized_models_by_state[state] = model(**self.model_args_by_state.get(state, dict()))
+        for state, model_metadata in self.model_metadata_by_state.items():
+            model = self.model_registry[model_metadata.name]
+            self.materialized_models_by_state[state] = model(
+                model_metadata.name,
+                model_metadata.input,
+                **model_metadata.model_args,
+            )
 
     def draw(self) -> None:
         G = nx.DiGraph()
@@ -104,7 +128,7 @@ class Graph(object):
         nx.draw(G, pos, with_labels=True)
 
         # Draw edges
-        edge_labels = nx.get_edge_attributes(G, 'label')
+        edge_labels = nx.get_edge_attributes(G, "label")
         nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
         plt.show()
 
@@ -116,7 +140,9 @@ class Graph(object):
         variables = {"step": 0}
         while not evaluate(self.end_condition, variables):
             restricted_variables = {k: v for k, v in variables.items()}
-            working_action = self.materialized_models_by_state[working_state].sim(input=restricted_variables)
+            working_action = self.materialized_models_by_state[working_state].sim(
+                input=restricted_variables
+            )
 
             # Record data before we change state or variables
             body["State"].append(working_state)
@@ -154,8 +180,7 @@ class GraphBuilder(object):
         self.states = list()
         self.reachable_actions_from_state = defaultdict(list)
         self.model_registry = dict()
-        self.models_by_state = dict()
-        self.model_args_by_state = dict()
+        self.model_metadata_by_state = dict()
         self.next_state_by_action = dict()
 
     def _mode(self, probe: str, probe_detail: str = "") -> None:
@@ -163,9 +188,13 @@ class GraphBuilder(object):
             "set_starting_state": "Initial",
             "set_end_condition": "Initial",
             "Action": "State",
+            "RegisterModel": "Initial",
         }
         if probe in needed_mode and needed_mode[probe] != self.mode:
             raise OMError(f"Can't run function {probe} in {self.mode} mode.")
+
+        if probe == "RegisterModel":
+            self.mode = probe
 
         if probe == "State":
             self.mode = probe
@@ -175,25 +204,20 @@ class GraphBuilder(object):
             self.mode = probe
             self.mode_detail = [self.mode_detail, probe_detail]
 
-    def _set_state_model(self, state: State, model: Model) -> None:
-        if not isinstance(model, str) and not isinstance(model, Model):
-            raise OMError(f"Model for State {state} must be a string or a Model")
+    def _set_state_model(self, state: State, model_metadata: Model) -> None:
+        if not isinstance(model_metadata, ModelMetadata):
+            raise OMError(f"Model for State {state} must be a Model")
 
-        if isinstance(model, Model):
-            if model._om_model_id:
-                self.model_args_by_state[state] = model._om_model_args
-                if model not in self.model_registry:
-                    self.model_registry[model._om_model_id] = model.__class__
-                model = model._om_model_id
-            else:
-                raise OMError(
-                    f"UDM {model.name} must be registered and referred to by name"
-                )
+        if model_metadata._om_model_id:
+            if model_metadata._om_model_id not in self.model_registry:
+                self.model_registry[
+                    model_metadata._om_model_id
+                ] = model_metadata._om_class
 
-        if model not in self.model_registry:
-            raise OMError(f"UDM {model} is not registered")
+        if model_metadata.name not in self.model_registry:
+            raise OMError(f"UDM {model_metadata.name} is not registered")
 
-        self.models_by_state[state] = model
+        self.model_metadata_by_state[state] = model_metadata
 
     def set_starting_state(self, starting_state: State) -> "GraphBuilder":
         self._mode("set_starting_state")
@@ -203,6 +227,11 @@ class GraphBuilder(object):
     def set_end_condition(self, end_condition: str) -> "GraphBuilder":
         self._mode("set_end_condition")
         self.end_condition = end_condition
+        return self
+
+    def RegisterModel(self, model_name: str, model: Model, **kwargs) -> "GraphBuilder":
+        self._mode("RegisterModel")
+        self.model_registry[model_name] = model
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":
@@ -242,11 +271,13 @@ class GraphBuilder(object):
         # We want to make sure that the models all return the correct values
         n_sims = kwargs.get("n_sims", 100)
         for _ in range(n_sims):
-            for state, model_name in self.models_by_state.items():
-                model = self.model_registry[model_name](
-                    **self.model_args_by_state.get(state, dict())
-                )
-                if not model.trainable:
+            for state, model_metadata in self.model_metadata_by_state.items():
+                if not model_metadata.trainable:
+                    model = self.model_registry[model_metadata.name](
+                        model_metadata.name,
+                        model_metadata.input,
+                        **model_metadata.model_args,
+                    )
                     result_action = model.sim(input=dict())
                     if result_action not in self.reachable_actions_from_state[state]:
                         raise OMError(
@@ -254,13 +285,12 @@ class GraphBuilder(object):
                         )
 
         return Graph(
-            name = self.name, 
-            starting_state = self.starting_state, 
-            end_condition = self.end_condition, 
-            states = self.states, 
-            reachable_actions_from_state = self.reachable_actions_from_state, 
-            model_registry = self.model_registry, 
-            models_by_state = self.models_by_state, 
-            model_args_by_state = self.model_args_by_state, 
-            next_state_by_action = self.next_state_by_action, 
+            name=self.name,
+            starting_state=self.starting_state,
+            end_condition=self.end_condition,
+            states=self.states,
+            reachable_actions_from_state=self.reachable_actions_from_state,
+            model_registry=self.model_registry,
+            model_metadata_by_state=self.model_metadata_by_state,
+            next_state_by_action=self.next_state_by_action,
         )
