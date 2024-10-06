@@ -18,4 +18,5 @@ graph = (
 
 print("HELLO WORLD")
 print(graph.name)
-graph.draw()
+print(graph.sim())
+# graph.draw()

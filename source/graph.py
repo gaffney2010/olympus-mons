@@ -1,11 +1,15 @@
 from collections import defaultdict
+from typing import Any, Dict, List, Union
 
 import matplotlib.pyplot as plt
 import networkx as nx
+import sympy
 
 
 State = str
 Action = str
+VariableValue = Any
+ActionOrVariable = Union[Action, VariableValue]
 
 
 class OMError(AssertionError):
@@ -19,12 +23,12 @@ class Model(object):
         self.trainable = False
         self.class_name = "Default"
 
-    def sim(self, input):
+    def sim(self, input: Dict) -> ActionOrVariable:
         raise OMError(
             "Model {self.class_name} must implement sim().  (Set self.class_name for better debugging.)"
         )
 
-    def train(self, input):
+    def train(self, inputs: List[Dict], outputs: List[ActionOrVariable]) -> None:
         if self.trainable:
             raise OMError(
                 "Model {self.class_name} must implement train().  (Set self.class_name for better debugging.)"
@@ -41,8 +45,16 @@ class ConstModel(Model):
         self._om_model_id = "ConstModel"
         self._om_model_args = {"action": action}
 
-    def sim(self, input):
+    def sim(self, input: Dict) -> ActionOrVariable:
         return self.action
+
+
+def evaluate(expr, values):
+    """A layer of abstraction to SymPy's eval() function"""
+    expr = sympy.simplify(expr)
+    for key, value in values.items():
+        expr = expr.subs(key, value)
+    return expr
 
 
 class Graph(object):
@@ -59,7 +71,17 @@ class Graph(object):
         self.model_args_by_state = kwargs["model_args_by_state"]
         self.next_state_by_action = kwargs["next_state_by_action"]
 
-    def draw(self):
+        self.materialized_models_by_state = dict()
+        self._materialize_models()
+
+        self.steps = None
+    
+    def _materialize_models(self) -> None:
+        for state, model_name in self.models_by_state.items():
+            model = self.model_registry[model_name]
+            self.materialized_models_by_state[state] = model(**self.model_args_by_state.get(state, dict()))
+
+    def draw(self) -> None:
         G = nx.DiGraph()
         for state in self.states:
             G.add_node(state)
@@ -78,6 +100,18 @@ class Graph(object):
         edge_labels = nx.get_edge_attributes(G, 'label')
         nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
         plt.show()
+
+    def sim(self, **kwargs) -> Dict:
+        working_state = self.starting_state
+        variables = {"step": 0}
+        while not evaluate(self.end_condition, variables):
+            restricted_variables = {k: v for k, v in variables.items()}
+            working_action = self.materialized_models_by_state[working_state].sim(input=restricted_variables)
+
+            working_state = self.next_state_by_action[working_action]
+            break
+
+        return variables
 
 
 class GraphBuilder(object):
@@ -180,14 +214,16 @@ class GraphBuilder(object):
         # We want to make sure that the models all return the correct values
         n_sims = kwargs.get("n_sims", 100)
         for _ in range(n_sims):
-            for state, model in self.models_by_state.items():
-                result_action = self.model_registry[model](
+            for state, model_name in self.models_by_state.items():
+                model = self.model_registry[model_name](
                     **self.model_args_by_state.get(state, dict())
-                ).sim(dict())
-                if result_action not in self.reachable_actions_from_state[state]:
-                    raise OMError(
-                        f"Model for State {state} returns Action {result_action} that is not reachable"
-                    )
+                )
+                if model.trainable:
+                    result_action = model.sim(input=dict())
+                    if result_action not in self.reachable_actions_from_state[state]:
+                        raise OMError(
+                            f"Model for State {state} returns Action {result_action} that is not reachable"
+                        )
 
         return Graph(
             name = self.name, 
