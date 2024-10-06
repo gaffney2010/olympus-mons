@@ -1,5 +1,8 @@
 from collections import defaultdict
 
+import matplotlib.pyplot as plt
+import networkx as nx
+
 
 State = str
 Action = str
@@ -17,11 +20,15 @@ class Model(object):
         self.class_name = "Default"
 
     def sim(self, input):
-        raise OMError("Model {self.class_name} must implement sim().  (Set self.class_name for better debugging.)")
+        raise OMError(
+            "Model {self.class_name} must implement sim().  (Set self.class_name for better debugging.)"
+        )
 
     def train(self, input):
         if self.trainable:
-            raise OMError("Model {self.class_name} must implement train().  (Set self.class_name for better debugging.)")
+            raise OMError(
+                "Model {self.class_name} must implement train().  (Set self.class_name for better debugging.)"
+            )
 
 
 class ConstModel(Model):
@@ -41,8 +48,36 @@ class ConstModel(Model):
 class Graph(object):
     def __init__(self, **kwargs):
         self.name = kwargs["name"]
+
         self.starting_state = kwargs["starting_state"]
+        self.end_condition = kwargs["end_condition"]
+
         self.states = kwargs["states"]
+        self.reachable_actions_from_state = kwargs["reachable_actions_from_state"]
+        self.model_registry = kwargs["model_registry"]
+        self.models_by_state = kwargs["models_by_state"]
+        self.model_args_by_state = kwargs["model_args_by_state"]
+        self.next_state_by_action = kwargs["next_state_by_action"]
+
+    def draw(self):
+        G = nx.DiGraph()
+        for state in self.states:
+            G.add_node(state)
+
+        for state, actions in self.reachable_actions_from_state.items():
+            for action in actions:
+                G.add_edge(state, self.next_state_by_action[action], label=action)
+
+        # Define position for nodes (using spring layout for better positioning)
+        pos = nx.spring_layout(G)
+
+        # Draw nodes
+        nx.draw(G, pos, with_labels=True)
+
+        # Draw edges
+        edge_labels = nx.get_edge_attributes(G, 'label')
+        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
+        plt.show()
 
 
 class GraphBuilder(object):
@@ -77,20 +112,22 @@ class GraphBuilder(object):
         if probe == "Action":
             self.mode = probe
             self.mode_detail = [self.mode_detail, probe_detail]
-    
+
     def _set_state_model(self, state: State, model: Model) -> None:
         if not isinstance(model, str) and not isinstance(model, Model):
             raise OMError(f"Model for State {state} must be a string or a Model")
 
-        if isinstance(model, Model): 
+        if isinstance(model, Model):
             if model._om_model_id:
                 self.model_args_by_state[state] = model._om_model_args
                 if model not in self.model_registry:
                     self.model_registry[model._om_model_id] = model.__class__
                 model = model._om_model_id
             else:
-                raise OMError(f"UDM {model.name} must be registered and referred to by name")
-        
+                raise OMError(
+                    f"UDM {model.name} must be registered and referred to by name"
+                )
+
         if model not in self.model_registry:
             raise OMError(f"UDM {model} is not registered")
 
@@ -107,7 +144,7 @@ class GraphBuilder(object):
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":
-        self._mode("State")
+        self._mode("State", state)
         self.states.append(state)
 
         if "model" not in kwargs:
@@ -117,9 +154,9 @@ class GraphBuilder(object):
             self.model_args_by_state[state] = kwargs["model_args"]
 
         return self
-        
+
     def Action(self, action: Action, **kwargs) -> "GraphBuilder":
-        self._mode("Action")
+        self._mode("Action", action)
 
         self.reachable_actions_from_state[self.mode_detail[0]].append(action)
 
@@ -131,21 +168,35 @@ class GraphBuilder(object):
 
     def Build(self, **kwargs) -> Graph:
         if self.starting_state not in self.states:
-            raise OMError(f"Starting state {self.starting_state} is not in states: {self.states}")
+            raise OMError(
+                f"Starting state {self.starting_state} is not in states: {self.states}"
+            )
         for k, v in self.next_state_by_action.items():
             if v not in self.states:
-                raise OMError(f"Next state {v} specified by Action {k} is not in states: {self.states}")
+                raise OMError(
+                    f"Next state {v} specified by Action {k} is not in states: {self.states}"
+                )
 
         # We want to make sure that the models all return the correct values
         n_sims = kwargs.get("n_sims", 100)
         for _ in range(n_sims):
             for state, model in self.models_by_state.items():
-                result_action = self.model_registry[model](**self.model_args_by_state.get(state, dict())).sim(dict())
+                result_action = self.model_registry[model](
+                    **self.model_args_by_state.get(state, dict())
+                ).sim(dict())
                 if result_action not in self.reachable_actions_from_state[state]:
-                    raise OMError(f"Model for State {state} returns Action {result_action} that is not reachable")
+                    raise OMError(
+                        f"Model for State {state} returns Action {result_action} that is not reachable"
+                    )
 
         return Graph(
-            name=self.name,
-            starting_state=self.starting_state,
-            states=self.states,
+            name = self.name, 
+            starting_state = self.starting_state, 
+            end_condition = self.end_condition, 
+            states = self.states, 
+            reachable_actions_from_state = self.reachable_actions_from_state, 
+            model_registry = self.model_registry, 
+            models_by_state = self.models_by_state, 
+            model_args_by_state = self.model_args_by_state, 
+            next_state_by_action = self.next_state_by_action, 
         )
