@@ -125,6 +125,17 @@ class TestGraphBuilder(unittest.TestCase):
                 .Build()
             )
 
+    def test_register_not_cannot_run_in_body(self):
+        with self.assertRaisesRegex(om.OMError, "Cannot run function RegisterModel in body mode."):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .RegisterModel("Regression", om.ConstModel("to_a"))
+                .Build()
+            )
+
     def test_fail_this_test(self):
         with self.assertRaisesRegex(om.OMError, "X"):
             _ = "HELLO"

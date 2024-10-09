@@ -163,6 +163,7 @@ class GraphBuilder(object):
         self.name = name
         self.mode = "Initial"
         self.mode_detail = None
+        self.body_turnstile = False
 
         self.starting_state = None
         self.end_condition = None
@@ -188,13 +189,19 @@ class GraphBuilder(object):
             "set_starting_state": "Initial",
             "set_end_condition": "Initial",
             "Action": "State",
-            "RegisterModel": "Initial",
         }
         if probe in needed_mode and needed_mode[probe] != self.mode:
             raise OMError(f"Can't run function {probe} in {self.mode} mode.")
 
+        header_only = {"set_starting_state", "set_end_condition", "RegisterModel"}
+        if probe in header_only and self.body_turnstile:
+            raise OMError(f"Cannot run function {probe} in body mode.")
+        if "State" == probe:
+            self.body_turnstile = True
+
         if probe == "RegisterModel":
             self.mode = probe
+            self.mode_detail = probe_detail
 
         if probe == "State":
             self.mode = probe
@@ -230,7 +237,7 @@ class GraphBuilder(object):
         return self
 
     def RegisterModel(self, model_name: str, model: Model, **kwargs) -> "GraphBuilder":
-        self._mode("RegisterModel")
+        self._mode("RegisterModel", model_name)
         self.model_registry[model_name] = model
         return self
 
