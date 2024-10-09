@@ -186,11 +186,11 @@ class GraphBuilder(object):
 
     def _mode(self, probe: str, probe_detail: str = "") -> None:
         needed_mode = {
-            "set_starting_state": "Initial",
-            "set_end_condition": "Initial",
-            "Action": "State",
+            "set_starting_state": ["Initial"],
+            "set_end_condition": ["Initial"],
+            "Action": ["State", "Action"],
         }
-        if probe in needed_mode and needed_mode[probe] != self.mode:
+        if probe in needed_mode and self.mode not in needed_mode[probe]:
             raise OMError(f"Can't run function {probe} in {self.mode} mode.")
 
         header_only = {"set_starting_state", "set_end_condition", "RegisterModel"}
@@ -209,6 +209,9 @@ class GraphBuilder(object):
 
         if probe == "Action":
             self.mode = probe
+            if isinstance(self.mode_detail, list):
+                # In format [State, Action]
+                self.mode_detail = self.mode_detail[0]
             self.mode_detail = [self.mode_detail, probe_detail]
 
     def _set_state_model(self, state: State, model_metadata: Model) -> None:
