@@ -1,3 +1,4 @@
+import random
 import unittest
 
 import graph as om
@@ -27,6 +28,40 @@ class TestGraphBuilder(unittest.TestCase):
         )
         self.assertListEqual(journal.raw["step"], [0, 1, 2, 3, 4])
         self.assertEqual(len(journal.raw), 3)
+
+    def test_happy_path_deterministic_no_variables_with_udm(self):
+        class SplitA(om.Model):
+            def sim(self, input):
+                if random.random() < 0.5:
+                    return "to_b"
+                return "to_c"
+
+        graph = (
+            om.GraphBuilder("Rotate")
+            .set_starting_state("A")
+            .set_end_condition("step >= 10")
+            .RegisterModel("SplitA", SplitA)
+            .State("A", model=om.UDM("SplitA", input=[])).Action("to_b", next_state="B").Action("to_c", next_state="C")
+            .State("B", model=om.ConstModel("to_a_from_b")).Action("to_a_from_b", next_state="A")
+            .State("C", model=om.ConstModel("to_a_from_c")).Action("to_a_from_c", next_state="A")
+            .Build()
+        )
+
+        random.seed(0)
+        journal = om.Journal()
+        final_state = graph.sim(debug=journal)
+        self.assertEqual(journal.csv, """,State,Action,step
+0,A,to_c,0
+1,C,to_a_from_c,1
+2,A,to_c,2
+3,C,to_a_from_c,3
+4,A,to_b,4
+5,B,to_a_from_b,5
+6,A,to_b,6
+7,B,to_a_from_b,7
+8,A,to_c,8
+9,C,to_a_from_c,9
+""")
 
     def test_set_starting_state_in_initial_mode(self):
         with self.assertRaisesRegex(

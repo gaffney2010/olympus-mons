@@ -154,6 +154,7 @@ class Graph(object):
             if isinstance(kwargs.get("debug"), Journal):
                 kwargs.get("debug").df = pd.DataFrame(body, columns=data_cols)
                 kwargs.get("debug").raw = body
+                kwargs.get("debug").csv = kwargs.get("debug").df.to_csv()
 
         return variables
 
