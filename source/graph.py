@@ -9,6 +9,7 @@ import sympy
 
 State = str
 Action = str
+Variable = str
 VariableValue = Any
 ActionOrVariable = Union[Action, VariableValue]
 
@@ -69,11 +70,12 @@ class ConstModel(ModelMetadata):
 
 
 class UDM(ModelMetadata):
-    def __init__(self, name: str, **kwargs):
+    def __init__(self, model_name: str, **kwargs):
         if "input" not in kwargs:
-            raise OMError(f"UDM {name} must specify an input")
-        self.input = kwargs["input"]
-        super().__init__(name)
+            raise OMError(f"UDM {model_name} must specify an input")
+        self.model_name = model_name
+        self.input = input
+        super().__init__(model_name)
         self.model_args.update(kwargs.get("model_args", {}))
 
 
@@ -122,6 +124,13 @@ class Graph(object):
         nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels)
         plt.show()
 
+    @staticmethod
+    def _variable_belongs_to_model_input(variable: Variable, model: Model) -> bool:
+        if variable in ("step",):
+            # Special variable, always include
+            return True
+        return variable in model.inputs
+
     def sim(self, **kwargs) -> Dict:
         data_cols = ["State", "Action", "step"] + []
         body = {k: [] for k in data_cols}
@@ -129,7 +138,12 @@ class Graph(object):
         working_state = self.starting_state
         variables = {"step": 0}
         while not evaluate(self.end_condition, variables):
-            restricted_variables = {k: v for k, v in variables.items()}
+            # Run sim on the current model.  Need to pass the right variables
+            this_model = self.materialized_models_by_state[working_state]
+            restricted_variables = dict()
+            for k, v in variables.items():
+                if Graph._variable_belongs_to_model_input(k, this_model):
+                    restricted_variables[k] = v
             working_action = self.materialized_models_by_state[working_state].sim(
                 input=restricted_variables
             )
@@ -290,7 +304,8 @@ class GraphBuilder(object):
                     continue
 
                 model = self.materialized_models_by_state[state]
-                result_action = model.sim(input=dict())
+                # TODO: Make some sampling logic
+                result_action = model.sim(input={"step": 1})
                 if result_action not in self.reachable_actions_from_state[state]:
                     raise OMError(
                         f"Model for State {state} returns Action {result_action} that is not reachable"

@@ -63,6 +63,40 @@ class TestGraphBuilder(unittest.TestCase):
 9,C,to_a_from_c,9
 """)
 
+    def test_happy_path_deterministic_with_variable_udm(self):
+        class SplitA(om.Model):
+            def sim(self, input):
+                if random.random() < 0.9 / (input["step"] + 1):
+                    return "to_b"
+                return "to_c"
+
+        graph = (
+            om.GraphBuilder("Rotate")
+            .set_starting_state("A")
+            .set_end_condition("step >= 10")
+            .RegisterModel("SplitA", SplitA)
+            .State("A", model=om.UDM("SplitA", input=["step"])).Action("to_b", next_state="B").Action("to_c", next_state="C")
+            .State("B", model=om.ConstModel("to_a_from_b")).Action("to_a_from_b", next_state="A")
+            .State("C", model=om.ConstModel("to_a_from_c")).Action("to_a_from_c", next_state="A")
+            .Build()
+        )
+
+        random.seed(4)
+        journal = om.Journal()
+        final_state = graph.sim(debug=journal)
+        self.assertEqual(journal.csv, """,State,Action,step
+0,A,to_b,0
+1,B,to_a_from_b,1
+2,A,to_b,2
+3,B,to_a_from_b,3
+4,A,to_c,4
+5,C,to_a_from_c,5
+6,A,to_c,6
+7,C,to_a_from_c,7
+8,A,to_b,8
+9,B,to_a_from_b,9
+""")
+
     def test_set_starting_state_in_initial_mode(self):
         with self.assertRaisesRegex(
             om.OMError, "Can't run function set_starting_state in State mode."

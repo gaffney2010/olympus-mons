@@ -91,7 +91,7 @@ We could have instead made a function that depens on `step` like this:
 ```python
 class SplitA(om.Model):
     def sim(self, input):
-        if random.random() < 0.5 / input["step"]:
+        if random.random() < 0.5 / (input["step"] + 1):  # step is 0-indexed
             return "B"
         return "C"
 
@@ -100,7 +100,7 @@ graph = (
     om.GraphBuilder("Out and back")
     ....
     .RegisterModel("SplitA", SplitA)
-    .State("A", model=SplitA(["step"])).Action("to_b", next_state="B").Action("to_c", next_state="C")
+    .State("A", model=om.UDM("SplitA", input=["step"])).Action("to_b", next_state="B").Action("to_c", next_state="C")
     ....
 )
 ```
