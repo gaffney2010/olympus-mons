@@ -1,4 +1,5 @@
 import random
+from typing import List
 import unittest
 
 import graph as om
@@ -29,6 +30,9 @@ class TestGraphBuilder(unittest.TestCase):
         self.assertListEqual(journal.raw["step"], [0, 1, 2, 3, 4])
         self.assertEqual(len(journal.raw), 3)
 
+    def _journal_compare(self, actual: om.Journal, expected: List[str]) -> None:
+        self.assertEqual(actual.csv, "\n".join(expected+[""]))
+
     def test_happy_path_deterministic_no_variables_with_udm(self):
         class SplitA(om.Model):
             def sim(self, input):
@@ -49,19 +53,20 @@ class TestGraphBuilder(unittest.TestCase):
 
         random.seed(0)
         journal = om.Journal()
-        final_state = graph.sim(debug=journal)
-        self.assertEqual(journal.csv, """,State,Action,step
-0,A,to_c,0
-1,C,to_a_from_c,1
-2,A,to_c,2
-3,C,to_a_from_c,3
-4,A,to_b,4
-5,B,to_a_from_b,5
-6,A,to_b,6
-7,B,to_a_from_b,7
-8,A,to_c,8
-9,C,to_a_from_c,9
-""")
+        _ = graph.sim(debug=journal)
+        self._journal_compare(journal, [
+            ",State,Action,step",
+            "0,A,to_c,0",
+            "1,C,to_a_from_c,1",
+            "2,A,to_c,2",
+            "3,C,to_a_from_c,3",
+            "4,A,to_b,4",
+            "5,B,to_a_from_b,5",
+            "6,A,to_b,6",
+            "7,B,to_a_from_b,7",
+            "8,A,to_c,8",
+            "9,C,to_a_from_c,9",
+        ])
 
     def test_happy_path_deterministic_with_variable_udm(self):
         class SplitA(om.Model):
@@ -83,19 +88,20 @@ class TestGraphBuilder(unittest.TestCase):
 
         random.seed(4)
         journal = om.Journal()
-        final_state = graph.sim(debug=journal)
-        self.assertEqual(journal.csv, """,State,Action,step
-0,A,to_b,0
-1,B,to_a_from_b,1
-2,A,to_b,2
-3,B,to_a_from_b,3
-4,A,to_c,4
-5,C,to_a_from_c,5
-6,A,to_c,6
-7,C,to_a_from_c,7
-8,A,to_b,8
-9,B,to_a_from_b,9
-""")
+        _ = graph.sim(debug=journal)
+        self._journal_compare(journal, [
+            ",State,Action,step",
+            "0,A,to_b,0",
+            "1,B,to_a_from_b,1",
+            "2,A,to_b,2",
+            "3,B,to_a_from_b,3",
+            "4,A,to_c,4",
+            "5,C,to_a_from_c,5",
+            "6,A,to_c,6",
+            "7,C,to_a_from_c,7",
+            "8,A,to_b,8",
+            "9,B,to_a_from_b,9",
+        ])
 
     def test_set_starting_state_in_initial_mode(self):
         with self.assertRaisesRegex(
