@@ -15,7 +15,6 @@ class IncNumBVisits(om.Model):
         return input["num_b_visits"] + 1
 
 
-random.seed(4)
 
 graph = (
     om.GraphBuilder("Rotate")
@@ -38,6 +37,7 @@ graph = (
 # print(graph.model_args_by_state)
 # print(graph.reachable_actions_from_state)
 
+random.seed(4)
 print("HELLO WORLD")
 print(graph.name)
 journal = om.Journal()

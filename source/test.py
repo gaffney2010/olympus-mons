@@ -6,6 +6,7 @@ import graph as om
 
 
 class TestGraphBuilder(unittest.TestCase):
+
     def test_happy_path_deterministic_no_variables(self):
         graph = (
             om.GraphBuilder("Rotate")
@@ -116,6 +117,58 @@ class TestGraphBuilder(unittest.TestCase):
                 "9,B,to_a_from_b,9",
             ],
         )
+
+    def test_happy_path_stochastic_with_custom_variable(self):
+        self.maxDiff = None
+
+        class SplitA(om.Model):
+            def sim(self, input):
+                if random.random() < (0.5) ** input["num_b_visits"]:
+                    return "to_b"
+                return "to_c"
+
+        class IncNumBVisits(om.Model):
+            def sim(self, input):
+                return input["num_b_visits"] + 1
+
+        graph = (
+            om.GraphBuilder("Rotate")
+            .set_starting_state("A")
+            .set_end_condition("step >= 10")
+            .RegisterModel("SplitA", SplitA)
+            .RegisterModel("IncNumBVisits", IncNumBVisits)
+            .Variable("num_b_visits", initially=0)
+            .State("A", model=om.UDM("SplitA", input=["num_b_visits"]))
+            .Action("to_b", next_state="B")
+            .Action("to_c", next_state="C")
+            .State("B", model=om.ConstModel("to_a_from_b"))
+            .Action("to_a_from_b", next_state="A")
+            .update("num_b_visits", om.UDM("IncNumBVisits", input=["num_b_visits"]))
+            .State("C", model=om.ConstModel("to_a_from_c"))
+            .Action("to_a_from_c", next_state="A")
+            .Build()
+        )
+
+        random.seed(4)
+        journal = om.Journal()
+        _ = graph.sim(debug=journal)
+        self._journal_compare(
+            journal,
+            [
+                ",State,Action,step,num_b_visits",
+                "0,A,to_b,0,0",
+                "1,B,to_a_from_b,1,0",
+                "2,A,to_b,2,1",
+                "3,B,to_a_from_b,3,1",
+                "4,A,to_c,4,2",
+                "5,C,to_a_from_c,5,2",
+                "6,A,to_b,6,2",
+                "7,B,to_a_from_b,7,2",
+                "8,A,to_b,8,3",
+                "9,B,to_a_from_b,9,3",
+            ],
+        )
+        self.assertDictEqual(graph.variables, {"num_b_visits": 4, "step": 10})
 
     def test_starting_state_is_set(self):
         with self.assertRaisesRegex(om.OMError, "No starting state specified"):
