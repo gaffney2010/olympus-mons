@@ -1,4 +1,5 @@
 from collections import defaultdict
+import random
 from typing import Any, Dict, List, Optional, Union
 
 import matplotlib.pyplot as plt
@@ -131,9 +132,21 @@ class Graph(object):
             for k, v in variables.items():
                 if Graph._variable_belongs_to_model_input(k, this_model):
                     restricted_variables[k] = v
-            working_action = self.materialized_models_by_state[working_state].sim(
-                input=restricted_variables
-            )
+
+            if kwargs.get("untrained_mode") and this_model.trainable:
+                # This is so we can test correctness without training
+                working_action = random.choice(
+                    self.reachable_actions_from_state[working_state]
+                )
+            else:
+                working_action = self.materialized_models_by_state[working_state].sim(
+                    input=restricted_variables
+                )
+
+            if working_action not in self.reachable_actions_from_state[working_state]:
+                raise OMError(
+                    f"Model for State {working_state} returns Action {working_action} that is not reachable"
+                )
 
             # Record data before we change state or variables
             body["State"].append(working_state)
@@ -199,7 +212,12 @@ class GraphBuilder(object):
         if probe in needed_mode and self.mode not in needed_mode[probe]:
             raise OMError(f"Can't run function {probe} in {self.mode} mode.")
 
-        header_only = {"set_starting_state", "set_end_condition", "RegisterModel", "Variable"}
+        header_only = {
+            "set_starting_state",
+            "set_end_condition",
+            "RegisterModel",
+            "Variable",
+        }
         if probe in header_only and self.body_turnstile:
             raise OMError(f"Cannot run function {probe} in body mode.")
         if "State" == probe:
@@ -283,6 +301,10 @@ class GraphBuilder(object):
         return self
 
     def Build(self, **kwargs) -> Graph:
+        if not self.graph.starting_state:
+            raise OMError("No starting state specified")
+        if not self.graph.end_condition:
+            raise OMError("No end condition specified")
         if self.graph.starting_state not in self.graph.states:
             raise OMError(
                 f"Starting state {self.graph.starting_state} is not in states: {self.graph.states}"
@@ -298,17 +320,6 @@ class GraphBuilder(object):
         # We want to make sure that the models all return the correct values
         n_sims = kwargs.get("n_sims", 100)
         for _ in range(n_sims):
-            for state, model_metadata in self.graph.model_metadata_by_state.items():
-                if model_metadata.trainable:
-                    # Can't really check these ones
-                    continue
-
-                model = self.graph.materialized_models_by_state[state]
-                # TODO: Make some sampling logic
-                result_action = model.sim(input={"step": 1})
-                if result_action not in self.graph.reachable_actions_from_state[state]:
-                    raise OMError(
-                        f"Model for State {state} returns Action {result_action} that is not reachable"
-                    )
+            self.graph.sim(untrained_mode=True)
 
         return self.graph
