@@ -325,6 +325,50 @@ class TestGraphBuilder(unittest.TestCase):
                 .Build(n_sims=1)
             )
 
+    def test_variables_returned_matches_length_of_target_variables(self):
+        with self.assertRaisesRegex(
+            om.OMError, "Model for State A returns 2 variables, but 1 variables were specified"
+        ):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Variable("X", initially=0)
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .update("X", model=om.ConstModel([1, 2]))
+                .Build(n_sims=1)
+            )
+
+    def test_variables_returned_matches_length_of_target_variables_2(self):
+        with self.assertRaisesRegex(
+            om.OMError, "Model for State A returns 1 variables, but 2 variables were specified"
+        ):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Variable("X", initially=0)
+                .Variable("Y", initially=0)
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .update(["X", "Y"], model=om.ConstModel(1))
+                .Build(n_sims=1)
+            )
+
+    def test_variable_length_match_happy_path(self):
+        _ = (
+            om.GraphBuilder("TEST")
+            .set_starting_state("A")
+            .set_end_condition("step >= 5")
+            .Variable("X", initially=0)
+            .Variable("Y", initially=0)
+            .State("A", model=om.ConstModel("to_a"))
+            .Action("to_a", next_state="A")
+            .update(["X", "Y"], model=om.ConstModel([1, 2]))
+            .Build(n_sims=1)
+        )
+
     def test_fail_this_test(self):
         with self.assertRaisesRegex(om.OMError, "X"):
             _ = "HELLO"

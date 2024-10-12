@@ -190,7 +190,7 @@ class Graph(object):
                     new_variables = [new_variables]
                 if len(new_variables) != len(self.targets_by_update[update]):
                     raise OMError(
-                        f"Model for State {state} returns {len(new_variables)} variables, but target has {len(self.targets_by_update[update])}"
+                        f"Model for State {state} returns {len(new_variables)} variables, but {len(self.targets_by_update[update])} variables were specified"
                     )
                 for target, source in zip(
                     self.targets_by_update[update], new_variables
@@ -291,6 +291,8 @@ class GraphBuilder(object):
             assert isinstance(self.mode_detail, list)
             if len(self.mode_detail) == 3:
                 self.mode_detail = self.mode_detail[:2]
+            if isinstance(probe_detail, list):
+                probe_detail = ",".join(probe_detail)
             self.mode_detail = self.mode_detail + [probe_detail]
 
     def _set_general_model(
