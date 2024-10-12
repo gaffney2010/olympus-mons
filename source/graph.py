@@ -77,6 +77,18 @@ class ConstModelImpl(Model):
         return self.action
 
 
+class IncModelImpl(Model):
+    def __init__(self, name, input: Optional[List] = None, **kwargs):
+        if "target_variable" not in kwargs:
+            raise OMError("IncModel must specify a target variable")
+        self.delta = kwargs["delta"] or 1
+        super().__init__(name=name, input=input, **kwargs)
+        self.target_variable = kwargs["target_variable"]
+
+    def sim(self, input: Dict) -> ActionOrVariable:
+        return input[self.target_variable] + self.delta
+
+
 class ConstModel(ModelMetadata):
     def __init__(self, action: Action = None, **kwargs):
         if not action:
@@ -87,6 +99,17 @@ class ConstModel(ModelMetadata):
         self._om_model_id = "ConstModel"
         self._om_class = ConstModelImpl
         self.model_args = {"action": action}
+
+
+class IncModel(ModelMetadata):
+    def __init__(self, target_variable: str, delta: int = 1, **kwargs):
+        self.target_variable = target_variable
+        self.delta = delta
+        self.input = [target_variable]
+        super().__init__("IncModel")
+        self._om_model_id = "IncModel"
+        self._om_class = IncModelImpl
+        self.model_args = {"target_variable": target_variable, "delta": delta}
 
 
 class UDM(ModelMetadata):
@@ -138,7 +161,9 @@ class Graph(object):
             return True
         return variable in model.input
 
-    def _sim_model_by_name(self, name: str, variables: Dict, **kwargs) -> ActionOrVariable:
+    def _sim_model_by_name(
+        self, name: str, variables: Dict, **kwargs
+    ) -> ActionOrVariable:
         model = self.materialized_models_by_name[name]
         restricted_variables = {k: v for k, v in variables.items() if k in model.input}
         if kwargs.get("untrained_mode") and model.trainable:
@@ -168,7 +193,9 @@ class Graph(object):
                 )
 
             # Run the current model
-            if (action := self._sim_model_by_name(state, variables, **kwargs)) == NOT_TRAINABLE_SENTINEL:
+            if (
+                action := self._sim_model_by_name(state, variables, **kwargs)
+            ) == NOT_TRAINABLE_SENTINEL:
                 action = random.choice(self.reachable_actions_from_state[state])
 
             if action not in self.reachable_actions_from_state[state]:
@@ -184,7 +211,11 @@ class Graph(object):
 
             # Change variables
             for update in self.updates_by_action[action]:
-                if (new_variables := self._sim_model_by_name(update, variables, **kwargs)) == NOT_TRAINABLE_SENTINEL:
+                if (
+                    new_variables := self._sim_model_by_name(
+                        update, variables, **kwargs
+                    )
+                ) == NOT_TRAINABLE_SENTINEL:
                     continue
                 if not isinstance(new_variables, list):
                     new_variables = [new_variables]
@@ -209,6 +240,7 @@ class Graph(object):
             kwargs.get("debug").csv = journal.df.to_csv()
 
         return variables
+
 
 class GraphBuilder(object):
     def __init__(self, name):

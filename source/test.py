@@ -6,7 +6,6 @@ import graph as om
 
 
 class TestGraphBuilder(unittest.TestCase):
-
     def test_happy_path_deterministic_no_variables(self):
         graph = (
             om.GraphBuilder("Rotate")
@@ -327,7 +326,8 @@ class TestGraphBuilder(unittest.TestCase):
 
     def test_variables_returned_matches_length_of_target_variables(self):
         with self.assertRaisesRegex(
-            om.OMError, "Model for State A returns 2 variables, but 1 variables were specified"
+            om.OMError,
+            "Model for State A returns 2 variables, but 1 variables were specified",
         ):
             _ = (
                 om.GraphBuilder("TEST")
@@ -342,7 +342,8 @@ class TestGraphBuilder(unittest.TestCase):
 
     def test_variables_returned_matches_length_of_target_variables_2(self):
         with self.assertRaisesRegex(
-            om.OMError, "Model for State A returns 1 variables, but 2 variables were specified"
+            om.OMError,
+            "Model for State A returns 1 variables, but 2 variables were specified",
         ):
             _ = (
                 om.GraphBuilder("TEST")
