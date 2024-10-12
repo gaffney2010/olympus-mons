@@ -25,7 +25,18 @@ class OMError(AssertionError):
 class Journal(object):
     def __init__(self):
         self.df = None
-        self.raw = None
+        self.raw = defaultdict(list)
+
+    def _add(self, action: ActionOrVariable, state: State, variables: Dict):
+        self.raw["State"].append(state)
+        self.raw["Action"].append(action)
+        for k, v in variables.items():
+            self.raw[k].append(v)
+
+    def _build_df(self):
+        column_order = ["State", "Action", "step"]
+        column_order += [k for k in self.raw.keys() if k not in column_order]
+        self.df = pd.DataFrame(self.raw, columns=column_order)
 
 
 class Model(object):
@@ -128,85 +139,78 @@ class Graph(object):
         return variable in model.input
 
     def sim(self, **kwargs) -> Dict:
-        data_cols = ["State", "Action", "step"] + [k for k in self.variables_initially]
-        body = {k: [] for k in data_cols}
+        """
+        Simulates the behavior of this Graph from start to finish.
 
-        working_state = self.starting_state
+        :param kwargs: If 'untrained_mode' is True, then untrained models will be skipped over
+        :return: A dictionary of the final variables.
+        """
+
+        # Set up the data collector
+        journal = Journal()
+
+        # Start the simulation
+        state = self.starting_state
         variables = {k: v for k, v in self.variables_initially.items()}
-        variables.update({"step": 0})
+        variables["step"] = 0
         while not evaluate(self.end_condition, variables):
             if variables["step"] > MAX_GAME_LENGTH:
                 raise OMError(
                     f"Game has exceeded maximum length {MAX_GAME_LENGTH}.  Perhaps you have an infinite loop?"
                 )
 
-            # Run sim on the current model.  Need to pass the right variables
-            this_model = self.materialized_models_by_name[working_state]
-            restricted_variables = dict()
-            for k, v in variables.items():
-                if Graph._variable_belongs_to_model_input(k, this_model):
-                    restricted_variables[k] = v
-
-            if kwargs.get("untrained_mode") and this_model.trainable:
+            # Run the current model
+            model = self.materialized_models_by_name[state]
+            restricted_variables = {k: v for k, v in variables.items() if k in model.input}
+            if kwargs.get("untrained_mode") and model.trainable:
                 # This is so we can test correctness without training
-                working_action = random.choice(
-                    self.reachable_actions_from_state[working_state]
-                )
+                action = random.choice(self.reachable_actions_from_state[state])
             else:
-                working_action = self.materialized_models_by_name[working_state].sim(
-                    input=restricted_variables
-                )
+                action = model.sim(input=restricted_variables)
 
-            if working_action not in self.reachable_actions_from_state[working_state]:
+            if action not in self.reachable_actions_from_state[state]:
                 raise OMError(
-                    f"Model for State {working_state} returns Action {working_action} that is not reachable"
+                    f"Model for State {state} returns Action {action} that is not reachable"
                 )
 
             # Record data before we change state or variables
-            body["State"].append(working_state)
-            body["Action"].append(working_action)
-            for k, v in variables.items():
-                body[k].append(v)
+            journal._add(action, state, variables)
 
             # Change state
-            working_state = self.next_state_by_action[working_action]
+            state = self.next_state_by_action[action]
 
             # Change variables
-            for update in self.updates_by_action[working_action]:
+            for update in self.updates_by_action[action]:
                 this_update = self.model_metadata_by_update[update]
-                restricted_variables = dict()
-                for k, v in variables.items():
-                    if Graph._variable_belongs_to_model_input(k, this_update):
-                        restricted_variables[k] = v
+                restricted_variables = {k: v for k, v in variables.items() if k in this_update.input}
 
-                if kwargs.get("untrained_mode") and this_model.trainable:
+                if kwargs.get("untrained_mode") and model.trainable:
                     pass
                 else:
-                    working_new_vars = self.materialized_models_by_name[update].sim(
+                    new_variables = self.materialized_models_by_name[update].sim(
                         input=restricted_variables
                     )
-                    if not isinstance(working_new_vars, list):
-                        working_new_vars = [working_new_vars]
-                    if len(working_new_vars) != len(self.targets_by_update[update]):
+                    if not isinstance(new_variables, list):
+                        new_variables = [new_variables]
+                    if len(new_variables) != len(self.targets_by_update[update]):
                         raise OMError(
-                            f"Model for State {working_state} returns {len(working_new_vars)} variables, but target has {len(self.targets_by_update[update])}"
+                            f"Model for State {state} returns {len(new_variables)} variables, but target has {len(self.targets_by_update[update])}"
                         )
                     for target, source in zip(
-                        self.targets_by_update[update], working_new_vars
+                        self.targets_by_update[update], new_variables
                     ):
                         variables[target] = source
             variables["step"] += 1
 
-        if kwargs.get("debug"):
-            if kwargs.get("debug") == "screen":
-                print(",".join(data_cols))
-                for i in range(len(body["State"])):
-                    print(",".join([str(body[k][i]) for k in data_cols]))
+        if kwargs.get("debug") == "screen":
+            for data in journal.df.to_dict(orient="records"):
+                print(data)
 
-            if isinstance(kwargs.get("debug"), Journal):
-                kwargs.get("debug").df = pd.DataFrame(body, columns=data_cols)
-                kwargs.get("debug").raw = body
-                kwargs.get("debug").csv = kwargs.get("debug").df.to_csv()
+        if isinstance(kwargs.get("debug"), Journal):
+            journal._build_df()
+            kwargs.get("debug").df = journal.df
+            kwargs.get("debug").raw = journal.raw
+            kwargs.get("debug").csv = journal.df.to_csv()
 
         return variables
 
@@ -407,6 +411,7 @@ class GraphBuilder(object):
             raise OMError(
                 f"Starting state {self.graph.starting_state} is not in states: {self.graph.states}"
             )
+
         for k, v in self.graph.next_state_by_action.items():
             if v not in self.graph.states:
                 raise OMError(

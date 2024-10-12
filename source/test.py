@@ -151,7 +151,7 @@ class TestGraphBuilder(unittest.TestCase):
 
         random.seed(4)
         journal = om.Journal()
-        _ = graph.sim(debug=journal)
+        final_vars = graph.sim(debug=journal)
         self._journal_compare(
             journal,
             [
@@ -168,7 +168,7 @@ class TestGraphBuilder(unittest.TestCase):
                 "9,B,to_a_from_b,9,3",
             ],
         )
-        self.assertDictEqual(graph.variables, {"num_b_visits": 4, "step": 10})
+        self.assertDictEqual(final_vars, {"num_b_visits": 4, "step": 10})
 
     def test_starting_state_is_set(self):
         with self.assertRaisesRegex(om.OMError, "No starting state specified"):
