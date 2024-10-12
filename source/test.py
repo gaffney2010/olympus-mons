@@ -33,7 +33,7 @@ class TestGraphBuilder(unittest.TestCase):
     def _journal_compare(self, actual: om.Journal, expected: List[str]) -> None:
         self.assertEqual(actual.csv, "\n".join(expected + [""]))
 
-    def test_happy_path_deterministic_no_variables_with_udm(self):
+    def test_happy_path_stochastic_no_variables_with_udm(self):
         class SplitA(om.Model):
             def sim(self, input):
                 if random.random() < 0.5:
@@ -52,7 +52,7 @@ class TestGraphBuilder(unittest.TestCase):
             .Action("to_a_from_b", next_state="A")
             .State("C", model=om.ConstModel("to_a_from_c"))
             .Action("to_a_from_c", next_state="A")
-            .Build(n_sims=1)
+            .Build(n_sims=100)
         )
 
         random.seed(0)
@@ -75,7 +75,7 @@ class TestGraphBuilder(unittest.TestCase):
             ],
         )
 
-    def test_happy_path_deterministic_with_variable_udm(self):
+    def test_happy_path_stochastic_with_variable_udm(self):
         class SplitA(om.Model):
             def sim(self, input):
                 if random.random() < 0.9 / (input["step"] + 1):
@@ -94,7 +94,7 @@ class TestGraphBuilder(unittest.TestCase):
             .Action("to_a_from_b", next_state="A")
             .State("C", model=om.ConstModel("to_a_from_c"))
             .Action("to_a_from_c", next_state="A")
-            .Build(n_sims=1)
+            .Build(n_sims=100)
         )
 
         random.seed(4)
@@ -243,6 +243,32 @@ class TestGraphBuilder(unittest.TestCase):
                 .State("A", model=om.ConstModel("to_a"))
                 .Action("to_a", next_state="A")
                 .RegisterModel("Regression", om.ConstModel("to_a"))
+                .Build(n_sims=1)
+            )
+
+    def test_update_variable_is_declared(self):
+        with self.assertRaisesRegex(om.OMError, "Variable X is not declared"):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .update("X", model=om.ConstModel(1))
+                .Build(n_sims=1)
+            )
+
+    def test_infinite_loop(self):
+        with self.assertRaisesRegex(
+            om.OMError,
+            "Game has exceeded maximum length 10000.  Perhaps you have an infinite loop?",
+        ):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step < 0")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
                 .Build(n_sims=1)
             )
 

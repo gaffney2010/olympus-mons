@@ -14,6 +14,9 @@ Variable = str
 VariableValue = Any
 ActionOrVariable = Union[Action, VariableValue]
 
+NOT_TRAINABLE_SENTINEL = "OM_NOT_TRAINABLE"
+MAX_GAME_LENGTH = 10_000
+
 
 class OMError(AssertionError):
     pass
@@ -29,20 +32,25 @@ class Model(object):
     def __init__(self, name: str = "Default", input: Optional[List] = None, **kwargs):
         self.input = input or dict()
         self.name = name
-        self.trainable = kwargs.get("trainable", False)
 
     def sim(self, input: Dict) -> ActionOrVariable:
         raise OMError("Model {self.name} must implement sim().")
 
-    def train(self, inputs: List[Dict], outputs: List[ActionOrVariable]) -> None:
-        if self.trainable:
-            raise OMError("Model {self.name} must implement train().")
+    def train(self, inputs: List[Dict], outputs: List[ActionOrVariable]) -> Any:
+        return NOT_TRAINABLE_SENTINEL
+
+    @property
+    def trainable(self) -> bool:
+        try:
+            value = self.train([], [])
+            return value != NOT_TRAINABLE_SENTINEL
+        except:
+            return False
 
 
 class ModelMetadata(object):
     def __init__(self, name: str):
         self.name = name
-        self.trainable = False
         self._om_model_id = None
         self.model_args = dict()
 
@@ -75,7 +83,7 @@ class UDM(ModelMetadata):
         if "input" not in kwargs:
             raise OMError(f"UDM {model_name} must specify an input")
         self.model_name = model_name
-        self.input = input
+        self.input = kwargs["input"]
         super().__init__(model_name)
         self.model_args.update(kwargs.get("model_args", {}))
 
@@ -117,17 +125,23 @@ class Graph(object):
         if variable in ("step",):
             # Special variable, always include
             return True
-        return variable in model.inputs
+        return variable in model.input
 
     def sim(self, **kwargs) -> Dict:
-        data_cols = ["State", "Action", "step"] + []
+        data_cols = ["State", "Action", "step"] + [k for k in self.variables_initially]
         body = {k: [] for k in data_cols}
 
         working_state = self.starting_state
-        variables = {"step": 0}
+        variables = {k: v for k, v in self.variables_initially.items()}
+        variables.update({"step": 0})
         while not evaluate(self.end_condition, variables):
+            if variables["step"] > MAX_GAME_LENGTH:
+                raise OMError(
+                    f"Game has exceeded maximum length {MAX_GAME_LENGTH}.  Perhaps you have an infinite loop?"
+                )
+
             # Run sim on the current model.  Need to pass the right variables
-            this_model = self.materialized_models_by_state[working_state]
+            this_model = self.materialized_models_by_name[working_state]
             restricted_variables = dict()
             for k, v in variables.items():
                 if Graph._variable_belongs_to_model_input(k, this_model):
@@ -139,7 +153,7 @@ class Graph(object):
                     self.reachable_actions_from_state[working_state]
                 )
             else:
-                working_action = self.materialized_models_by_state[working_state].sim(
+                working_action = self.materialized_models_by_name[working_state].sim(
                     input=restricted_variables
                 )
 
@@ -151,12 +165,36 @@ class Graph(object):
             # Record data before we change state or variables
             body["State"].append(working_state)
             body["Action"].append(working_action)
-            body["step"].append(variables["step"])
+            for k, v in variables.items():
+                body[k].append(v)
 
             # Change state
             working_state = self.next_state_by_action[working_action]
 
             # Change variables
+            for update in self.updates_by_action[working_action]:
+                this_update = self.model_metadata_by_update[update]
+                restricted_variables = dict()
+                for k, v in variables.items():
+                    if Graph._variable_belongs_to_model_input(k, this_update):
+                        restricted_variables[k] = v
+
+                if kwargs.get("untrained_mode") and this_model.trainable:
+                    pass
+                else:
+                    working_new_vars = self.materialized_models_by_name[update].sim(
+                        input=restricted_variables
+                    )
+                    if not isinstance(working_new_vars, list):
+                        working_new_vars = [working_new_vars]
+                    if len(working_new_vars) != len(self.targets_by_update[update]):
+                        raise OMError(
+                            f"Model for State {working_state} returns {len(working_new_vars)} variables, but target has {len(self.targets_by_update[update])}"
+                        )
+                    for target, source in zip(
+                        self.targets_by_update[update], working_new_vars
+                    ):
+                        variables[target] = source
             variables["step"] += 1
 
         if kwargs.get("debug"):
@@ -188,16 +226,24 @@ class GraphBuilder(object):
         self.graph.states = list()
         self.graph.reachable_actions_from_state = defaultdict(list)
         self.graph.model_registry = dict()
-        self.graph.model_metadata_by_state = dict()
-        self.graph.materialized_models_by_state = dict()
-        self.graph.next_state_by_action = dict()
 
-        self.graph.variables = dict()
+        self.graph.model_metadata_by_state = dict()
+        self.graph.next_state_by_action = dict()
+        self.graph.updates_by_action = defaultdict(list)
+        self.graph.model_metadata_by_update = dict()
+        self.graph.targets_by_update = dict()
+
+        self.graph.materialized_models_by_name = dict()
+
+        self.graph.variables_initially = dict()
 
     def _materialize_models(self) -> None:
-        for state, model_metadata in self.graph.model_metadata_by_state.items():
+        for state, model_metadata in {
+            **self.graph.model_metadata_by_state,
+            **self.graph.model_metadata_by_update,
+        }.items():
             model = self.graph.model_registry[model_metadata.name]
-            self.graph.materialized_models_by_state[state] = model(
+            self.graph.materialized_models_by_name[state] = model(
                 model_metadata.name,
                 model_metadata.input,
                 **model_metadata.model_args,
@@ -207,7 +253,8 @@ class GraphBuilder(object):
         needed_mode = {
             "set_starting_state": ["Initial"],
             "set_end_condition": ["Initial"],
-            "Action": ["State", "Action"],
+            "Action": ["State", "Action", "update"],
+            "update": ["Action"],
         }
         if probe in needed_mode and self.mode not in needed_mode[probe]:
             raise OMError(f"Can't run function {probe} in {self.mode} mode.")
@@ -239,23 +286,53 @@ class GraphBuilder(object):
             self.mode = probe
             if isinstance(self.mode_detail, list):
                 # In format [State, Action]
-                self.mode_detail = self.mode_detail[0]
-            self.mode_detail = [self.mode_detail, probe_detail]
+                self.mode_detail = self.mode_detail[:1]
+            else:
+                self.mode_detail = [self.mode_detail]
+            self.mode_detail = self.mode_detail + [probe_detail]
 
-    def _set_state_model(self, state: State, model_metadata: Model) -> None:
+        if probe == "update":
+            self.mode = probe
+            assert isinstance(self.mode_detail, list)
+            if len(self.mode_detail) == 3:
+                self.mode_detail = self.mode_detail[:2]
+            self.mode_detail = self.mode_detail + [probe_detail]
+
+    def _set_general_model(
+        self,
+        state: State,
+        model_metadata: ModelMetadata,
+        model_metadata_map: Dict,
+        **kwargs,
+    ) -> None:
         if not isinstance(model_metadata, ModelMetadata):
             raise OMError(f"Model for State {state} must be a Model")
 
+        # Check against registry
         if model_metadata._om_model_id:
             if model_metadata._om_model_id not in self.graph.model_registry:
                 self.graph.model_registry[
                     model_metadata._om_model_id
                 ] = model_metadata._om_class
-
         if model_metadata.name not in self.graph.model_registry:
             raise OMError(f"UDM {model_metadata.name} is not registered")
 
-        self.graph.model_metadata_by_state[state] = model_metadata
+        # Set metadata
+        model_metadata_map[state] = model_metadata
+
+    def _set_state_model(
+        self, state: State, model_metadata: ModelMetadata, **kwargs
+    ) -> None:
+        self._set_general_model(
+            state, model_metadata, self.graph.model_metadata_by_state, **kwargs
+        )
+
+    def _set_update_model(
+        self, update_name: str, model_metadata: ModelMetadata, **kwargs
+    ) -> None:
+        self._set_general_model(
+            update_name, model_metadata, self.graph.model_metadata_by_update, **kwargs
+        )
 
     def set_starting_state(self, starting_state: State) -> "GraphBuilder":
         self._mode("set_starting_state")
@@ -274,7 +351,7 @@ class GraphBuilder(object):
 
     def Variable(self, variable_name: str, initially: Any = None) -> "GraphBuilder":
         self._mode("Variable", variable_name)
-        self.graph.variables[variable_name] = initially
+        self.graph.variables_initially[variable_name] = initially
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":
@@ -283,9 +360,7 @@ class GraphBuilder(object):
 
         if "model" not in kwargs:
             raise OMError(f"State {state} doesn't specify a model")
-        self._set_state_model(state, kwargs["model"])
-        if "model_args" in kwargs:
-            self.graph.model_args_by_state[state] = kwargs["model_args"]
+        self._set_state_model(state, kwargs["model"], **kwargs)
 
         return self
 
@@ -297,6 +372,29 @@ class GraphBuilder(object):
         if "next_state" not in kwargs:
             raise OMError(f"Action {action} doesn't specify a next_state")
         self.graph.next_state_by_action[action] = kwargs["next_state"]
+
+        return self
+
+    def _get_update_name(self, _: List[str]) -> str:
+        # This has to be universally unique
+        return "::".join(self.mode_detail) + ":" + str(random.randint(0, 1000000))
+
+    def update(
+        self, variable_names: Union[str, List[str]], model: ModelMetadata, **kwargs
+    ) -> "GraphBuilder":
+        self._mode("update", variable_names)
+        if isinstance(variable_names, str):
+            variable_names = [variable_names]
+
+        for variable_name in variable_names:
+            if variable_name not in self.graph.variables_initially:
+                raise OMError(f"Variable {variable_name} is not declared")
+
+        update_name = self._get_update_name(variable_names)
+        self.graph.updates_by_action[self.mode_detail[1]].append(update_name)
+        self.graph.targets_by_update[update_name] = variable_names
+
+        self._set_update_model(update_name, model, **kwargs)
 
         return self
 
