@@ -182,10 +182,18 @@ class Graph(object):
         # Set up the data collector
         journal = Journal()
 
+        # Set up the variables
+        variables = {k: v for k, v in self.variables_initially.items()}
+        variables.update(self.context)
+        variables["step"] = 0
+        for k, v in kwargs.get("context", {}).items():
+            if k not in self.context:
+                raise OMError(f"Context {k} has not been declared")
+            variables[k] = v
+        # TODO: Validators
+
         # Start the simulation
         state = self.starting_state
-        variables = {k: v for k, v in self.variables_initially.items()}
-        variables["step"] = 0
         while not evaluate(self.end_condition, variables):
             if variables["step"] > MAX_GAME_LENGTH:
                 raise OMError(
@@ -266,6 +274,9 @@ class GraphBuilder(object):
         self.graph.materialized_models_by_name = dict()
 
         self.graph.variables_initially = dict()
+        self.graph.context = dict()
+        self.graph.variable_validators = dict()
+        self.graph.context_validators = dict()
 
     def _materialize_models(self) -> None:
         for state, model_metadata in self.graph.model_metadata_by_name.items():
@@ -291,21 +302,14 @@ class GraphBuilder(object):
             "set_end_condition",
             "RegisterModel",
             "Variable",
+            "Context",
         }
         if probe in header_only and self.body_turnstile:
             raise OMError(f"Cannot run function {probe} in body mode.")
         if "State" == probe:
             self.body_turnstile = True
 
-        if probe == "RegisterModel":
-            self.mode = probe
-            self.mode_detail = probe_detail
-
-        if probe == "Variable":
-            self.mode = probe
-            self.mode_detail = probe_detail
-
-        if probe == "State":
+        if probe in ("RegisterModel", "Variable", "State", "Context"):
             self.mode = probe
             self.mode_detail = probe_detail
 
@@ -363,9 +367,18 @@ class GraphBuilder(object):
         self.graph.model_registry[model_name] = model
         return self
 
-    def Variable(self, variable_name: str, initially: Any = None) -> "GraphBuilder":
+    def Context(self, context_name: str, default: Any = None, **kwargs) -> "GraphBuilder":
+        self._mode("Context", context_name)
+        self.graph.context[context_name] = default
+        if "validator" in kwargs:
+            self.graph.context_validators[context_name] = kwargs["validator"]
+        return self
+
+    def Variable(self, variable_name: str, initially: Any = None, **kwargs) -> "GraphBuilder":
         self._mode("Variable", variable_name)
         self.graph.variables_initially[variable_name] = initially
+        if "validator" in kwargs:
+            self.graph.variable_validators[variable_name] = kwargs["validator"]
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":
