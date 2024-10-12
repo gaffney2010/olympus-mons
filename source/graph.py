@@ -190,6 +190,8 @@ class GraphBuilder(object):
         self.materialized_models_by_state = dict()
         self.next_state_by_action = dict()
 
+        self.variables = dict()
+
     def _materialize_models(self) -> None:
         for state, model_metadata in self.model_metadata_by_state.items():
             model = self.model_registry[model_metadata.name]
@@ -208,13 +210,17 @@ class GraphBuilder(object):
         if probe in needed_mode and self.mode not in needed_mode[probe]:
             raise OMError(f"Can't run function {probe} in {self.mode} mode.")
 
-        header_only = {"set_starting_state", "set_end_condition", "RegisterModel"}
+        header_only = {"set_starting_state", "set_end_condition", "RegisterModel", "Variable"}
         if probe in header_only and self.body_turnstile:
             raise OMError(f"Cannot run function {probe} in body mode.")
         if "State" == probe:
             self.body_turnstile = True
 
         if probe == "RegisterModel":
+            self.mode = probe
+            self.mode_detail = probe_detail
+
+        if probe == "Variable":
             self.mode = probe
             self.mode_detail = probe_detail
 
@@ -257,6 +263,11 @@ class GraphBuilder(object):
     def RegisterModel(self, model_name: str, model: Model, **kwargs) -> "GraphBuilder":
         self._mode("RegisterModel", model_name)
         self.model_registry[model_name] = model
+        return self
+
+    def Variable(self, variable_name: str, initially: Any = None) -> "GraphBuilder":
+        self._mode("Variable", variable_name)
+        self.variables[variable_name] = initially
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":
