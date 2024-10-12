@@ -138,6 +138,14 @@ class Graph(object):
             return True
         return variable in model.input
 
+    def _sim_model_by_name(self, name: str, variables: Dict, **kwargs) -> ActionOrVariable:
+        model = self.materialized_models_by_name[name]
+        restricted_variables = {k: v for k, v in variables.items() if k in model.input}
+        if kwargs.get("untrained_mode") and model.trainable:
+            # This is so we can test correctness without training
+            return NOT_TRAINABLE_SENTINEL
+        return model.sim(restricted_variables)
+
     def sim(self, **kwargs) -> Dict:
         """
         Simulates the behavior of this Graph from start to finish.
@@ -160,13 +168,8 @@ class Graph(object):
                 )
 
             # Run the current model
-            model = self.materialized_models_by_name[state]
-            restricted_variables = {k: v for k, v in variables.items() if k in model.input}
-            if kwargs.get("untrained_mode") and model.trainable:
-                # This is so we can test correctness without training
+            if (action := self._sim_model_by_name(state, variables, **kwargs)) == NOT_TRAINABLE_SENTINEL:
                 action = random.choice(self.reachable_actions_from_state[state])
-            else:
-                action = model.sim(input=restricted_variables)
 
             if action not in self.reachable_actions_from_state[state]:
                 raise OMError(
@@ -181,25 +184,18 @@ class Graph(object):
 
             # Change variables
             for update in self.updates_by_action[action]:
-                this_update = self.model_metadata_by_update[update]
-                restricted_variables = {k: v for k, v in variables.items() if k in this_update.input}
-
-                if kwargs.get("untrained_mode") and model.trainable:
-                    pass
-                else:
-                    new_variables = self.materialized_models_by_name[update].sim(
-                        input=restricted_variables
+                if (new_variables := self._sim_model_by_name(update, variables, **kwargs)) == NOT_TRAINABLE_SENTINEL:
+                    continue
+                if not isinstance(new_variables, list):
+                    new_variables = [new_variables]
+                if len(new_variables) != len(self.targets_by_update[update]):
+                    raise OMError(
+                        f"Model for State {state} returns {len(new_variables)} variables, but target has {len(self.targets_by_update[update])}"
                     )
-                    if not isinstance(new_variables, list):
-                        new_variables = [new_variables]
-                    if len(new_variables) != len(self.targets_by_update[update]):
-                        raise OMError(
-                            f"Model for State {state} returns {len(new_variables)} variables, but target has {len(self.targets_by_update[update])}"
-                        )
-                    for target, source in zip(
-                        self.targets_by_update[update], new_variables
-                    ):
-                        variables[target] = source
+                for target, source in zip(
+                    self.targets_by_update[update], new_variables
+                ):
+                    variables[target] = source
             variables["step"] += 1
 
         if kwargs.get("debug") == "screen":
