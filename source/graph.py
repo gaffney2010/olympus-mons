@@ -89,20 +89,7 @@ def evaluate(expr, values):
 
 class Graph(object):
     def __init__(self, **kwargs):
-        self.name = kwargs["name"]
-
-        self.starting_state = kwargs["starting_state"]
-        self.end_condition = kwargs["end_condition"]
-
-        self.states = kwargs["states"]
-        self.reachable_actions_from_state = kwargs["reachable_actions_from_state"]
-        self.model_registry = kwargs["model_registry"]
-        self.model_metadata_by_state = kwargs["model_metadata_by_state"]
-        self.next_state_by_action = kwargs["next_state_by_action"]
-
-        self.materialized_models_by_state = kwargs["materialized_models_by_state"]
-
-        # self.steps = None
+        pass
 
     def draw(self) -> None:
         G = nx.DiGraph()
@@ -175,27 +162,29 @@ class Graph(object):
 
 class GraphBuilder(object):
     def __init__(self, name):
-        self.name = name
+        self.graph = Graph()
+        self.graph.name = name
+
         self.mode = "Initial"
         self.mode_detail = None
         self.body_turnstile = False
 
-        self.starting_state = None
-        self.end_condition = None
+        self.graph.starting_state = None
+        self.graph.end_condition = None
 
-        self.states = list()
-        self.reachable_actions_from_state = defaultdict(list)
-        self.model_registry = dict()
-        self.model_metadata_by_state = dict()
-        self.materialized_models_by_state = dict()
-        self.next_state_by_action = dict()
+        self.graph.states = list()
+        self.graph.reachable_actions_from_state = defaultdict(list)
+        self.graph.model_registry = dict()
+        self.graph.model_metadata_by_state = dict()
+        self.graph.materialized_models_by_state = dict()
+        self.graph.next_state_by_action = dict()
 
-        self.variables = dict()
+        self.graph.variables = dict()
 
     def _materialize_models(self) -> None:
-        for state, model_metadata in self.model_metadata_by_state.items():
-            model = self.model_registry[model_metadata.name]
-            self.materialized_models_by_state[state] = model(
+        for state, model_metadata in self.graph.model_metadata_by_state.items():
+            model = self.graph.model_registry[model_metadata.name]
+            self.graph.materialized_models_by_state[state] = model(
                 model_metadata.name,
                 model_metadata.input,
                 **model_metadata.model_args,
@@ -240,68 +229,68 @@ class GraphBuilder(object):
             raise OMError(f"Model for State {state} must be a Model")
 
         if model_metadata._om_model_id:
-            if model_metadata._om_model_id not in self.model_registry:
-                self.model_registry[
+            if model_metadata._om_model_id not in self.graph.model_registry:
+                self.graph.model_registry[
                     model_metadata._om_model_id
                 ] = model_metadata._om_class
 
-        if model_metadata.name not in self.model_registry:
+        if model_metadata.name not in self.graph.model_registry:
             raise OMError(f"UDM {model_metadata.name} is not registered")
 
-        self.model_metadata_by_state[state] = model_metadata
+        self.graph.model_metadata_by_state[state] = model_metadata
 
     def set_starting_state(self, starting_state: State) -> "GraphBuilder":
         self._mode("set_starting_state")
-        self.starting_state = starting_state
+        self.graph.starting_state = starting_state
         return self
 
     def set_end_condition(self, end_condition: str) -> "GraphBuilder":
         self._mode("set_end_condition")
-        self.end_condition = end_condition
+        self.graph.end_condition = end_condition
         return self
 
     def RegisterModel(self, model_name: str, model: Model, **kwargs) -> "GraphBuilder":
         self._mode("RegisterModel", model_name)
-        self.model_registry[model_name] = model
+        self.graph.model_registry[model_name] = model
         return self
 
     def Variable(self, variable_name: str, initially: Any = None) -> "GraphBuilder":
         self._mode("Variable", variable_name)
-        self.variables[variable_name] = initially
+        self.graph.variables[variable_name] = initially
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":
         self._mode("State", state)
-        self.states.append(state)
+        self.graph.states.append(state)
 
         if "model" not in kwargs:
             raise OMError(f"State {state} doesn't specify a model")
         self._set_state_model(state, kwargs["model"])
         if "model_args" in kwargs:
-            self.model_args_by_state[state] = kwargs["model_args"]
+            self.graph.model_args_by_state[state] = kwargs["model_args"]
 
         return self
 
     def Action(self, action: Action, **kwargs) -> "GraphBuilder":
         self._mode("Action", action)
 
-        self.reachable_actions_from_state[self.mode_detail[0]].append(action)
+        self.graph.reachable_actions_from_state[self.mode_detail[0]].append(action)
 
         if "next_state" not in kwargs:
             raise OMError(f"Action {action} doesn't specify a next_state")
-        self.next_state_by_action[action] = kwargs["next_state"]
+        self.graph.next_state_by_action[action] = kwargs["next_state"]
 
         return self
 
     def Build(self, **kwargs) -> Graph:
-        if self.starting_state not in self.states:
+        if self.graph.starting_state not in self.graph.states:
             raise OMError(
-                f"Starting state {self.starting_state} is not in states: {self.states}"
+                f"Starting state {self.graph.starting_state} is not in states: {self.graph.states}"
             )
-        for k, v in self.next_state_by_action.items():
-            if v not in self.states:
+        for k, v in self.graph.next_state_by_action.items():
+            if v not in self.graph.states:
                 raise OMError(
-                    f"Next state {v} specified by Action {k} is not in states: {self.states}"
+                    f"Next state {v} specified by Action {k} is not in states: {self.graph.states}"
                 )
 
         self._materialize_models()
@@ -309,27 +298,17 @@ class GraphBuilder(object):
         # We want to make sure that the models all return the correct values
         n_sims = kwargs.get("n_sims", 100)
         for _ in range(n_sims):
-            for state, model_metadata in self.model_metadata_by_state.items():
+            for state, model_metadata in self.graph.model_metadata_by_state.items():
                 if model_metadata.trainable:
                     # Can't really check these ones
                     continue
 
-                model = self.materialized_models_by_state[state]
+                model = self.graph.materialized_models_by_state[state]
                 # TODO: Make some sampling logic
                 result_action = model.sim(input={"step": 1})
-                if result_action not in self.reachable_actions_from_state[state]:
+                if result_action not in self.graph.reachable_actions_from_state[state]:
                     raise OMError(
                         f"Model for State {state} returns Action {result_action} that is not reachable"
                     )
 
-        return Graph(
-            name=self.name,
-            starting_state=self.starting_state,
-            end_condition=self.end_condition,
-            states=self.states,
-            reachable_actions_from_state=self.reachable_actions_from_state,
-            model_registry=self.model_registry,
-            model_metadata_by_state=self.model_metadata_by_state,
-            next_state_by_action=self.next_state_by_action,
-            materialized_models_by_state=self.materialized_models_by_state,
-        )
+        return self.graph
