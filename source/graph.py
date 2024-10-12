@@ -210,7 +210,6 @@ class Graph(object):
 
         return variables
 
-
 class GraphBuilder(object):
     def __init__(self, name):
         self.graph = Graph()
@@ -227,21 +226,17 @@ class GraphBuilder(object):
         self.graph.reachable_actions_from_state = defaultdict(list)
         self.graph.model_registry = dict()
 
-        self.graph.model_metadata_by_state = dict()
         self.graph.next_state_by_action = dict()
         self.graph.updates_by_action = defaultdict(list)
-        self.graph.model_metadata_by_update = dict()
         self.graph.targets_by_update = dict()
 
+        self.graph.model_metadata_by_name = dict()
         self.graph.materialized_models_by_name = dict()
 
         self.graph.variables_initially = dict()
 
     def _materialize_models(self) -> None:
-        for state, model_metadata in {
-            **self.graph.model_metadata_by_state,
-            **self.graph.model_metadata_by_update,
-        }.items():
+        for state, model_metadata in self.graph.model_metadata_by_name.items():
             model = self.graph.model_registry[model_metadata.name]
             self.graph.materialized_models_by_name[state] = model(
                 model_metadata.name,
@@ -302,7 +297,6 @@ class GraphBuilder(object):
         self,
         state: State,
         model_metadata: ModelMetadata,
-        model_metadata_map: Dict,
         **kwargs,
     ) -> None:
         if not isinstance(model_metadata, ModelMetadata):
@@ -318,21 +312,7 @@ class GraphBuilder(object):
             raise OMError(f"UDM {model_metadata.name} is not registered")
 
         # Set metadata
-        model_metadata_map[state] = model_metadata
-
-    def _set_state_model(
-        self, state: State, model_metadata: ModelMetadata, **kwargs
-    ) -> None:
-        self._set_general_model(
-            state, model_metadata, self.graph.model_metadata_by_state, **kwargs
-        )
-
-    def _set_update_model(
-        self, update_name: str, model_metadata: ModelMetadata, **kwargs
-    ) -> None:
-        self._set_general_model(
-            update_name, model_metadata, self.graph.model_metadata_by_update, **kwargs
-        )
+        self.graph.model_metadata_by_name[state] = model_metadata
 
     def set_starting_state(self, starting_state: State) -> "GraphBuilder":
         self._mode("set_starting_state")
@@ -360,7 +340,7 @@ class GraphBuilder(object):
 
         if "model" not in kwargs:
             raise OMError(f"State {state} doesn't specify a model")
-        self._set_state_model(state, kwargs["model"], **kwargs)
+        self._set_general_model(state, kwargs["model"], **kwargs)
 
         return self
 
@@ -394,7 +374,7 @@ class GraphBuilder(object):
         self.graph.updates_by_action[self.mode_detail[1]].append(update_name)
         self.graph.targets_by_update[update_name] = variable_names
 
-        self._set_update_model(update_name, model, **kwargs)
+        self._set_general_model(update_name, model, **kwargs)
 
         return self
 
