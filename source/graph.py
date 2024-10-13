@@ -124,10 +124,13 @@ class UDM(ModelMetadata):
 
 def evaluate(expr, values):
     """A layer of abstraction to SymPy's eval() function"""
-    expr = sympy.simplify(expr)
-    for key, value in values.items():
-        expr = expr.subs(key, value)
-    return expr
+    try:
+        expr = sympy.sympify(expr)
+        for key, value in values.items():
+            expr = expr.subs(key, value)
+        return expr
+    except:
+        raise OMError(f"Could not evaluate expression {expr} with values {values}")
 
 
 class Graph(object):
@@ -172,9 +175,9 @@ class Graph(object):
         return model.sim(restricted_variables)
 
     def _validate_variables(self, variables: Dict) -> None:
-        for var_name, var_value in variables.items():
+        for var_name, _ in variables.items():
             if validator := self.validators.get(var_name):
-                if not evaluate(validator, {var_name: var_value}):
+                if not evaluate(validator, variables):
                     raise OMError(f"Variable or Context {var_name} failed validation")
 
     def sim(self, **kwargs) -> Dict:
@@ -375,6 +378,8 @@ class GraphBuilder(object):
 
     def Context(self, context_name: str, default: Any = None, **kwargs) -> "GraphBuilder":
         self._mode("Context", context_name)
+        if default is None:
+            raise OMError(f"Context {context_name} must have a default value")
         self.graph.context[context_name] = default
         if "validator" in kwargs:
             self.graph.validators[context_name] = kwargs["validator"]

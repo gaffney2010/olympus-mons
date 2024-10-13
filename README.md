@@ -215,6 +215,8 @@ graph.sim(debug="screen", context={"total_steps": 10})
 graph.sim(debug="screen", context={"total_steps": 20})
 ```
 
+Unlike variables, Contexts need default values.  While we assume that an unset Variable will be set appropriately, Contexts are only set in the sim function.  The graph builder will run some simulations to test the correctness of the graph, and needs to know what value to use.
+
 So far we've only written to screen, but you can also write to a Journal.  After passing a Journal to debug, the Journal will contain a field call `df` with the simulation written as a pandas DataFrame.
 
 Let's say that you want to answer the question:  "What's the expected number of steps spent in State "B" out of the first 100 steps?"

@@ -370,6 +370,58 @@ class TestGraphBuilder(unittest.TestCase):
             .Build(n_sims=1)
         )
 
+    def test_variable_validator(self):
+        with self.assertRaisesRegex(om.OMError, "Variable or Context X failed validation"):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Variable("X", initially=0, validator="X < 3")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .update("X", model=om.IncModel("X"))
+                .Build(n_sims=1)
+            )
+
+    def test_context_validator(self):
+        graph = (
+            om.GraphBuilder("TEST")
+            .set_starting_state("A")
+            .set_end_condition("step >= 5")
+            .Context("X", default=0, validator="X < 3")
+            .State("A", model=om.ConstModel("to_a"))
+            .Action("to_a", next_state="A")
+            .Build(n_sims=1)
+        )
+        with self.assertRaisesRegex(om.OMError, "Variable or Context X failed validation"):
+            graph.sim(context={"X": 4})
+
+    def test_failed_to_evaluate_expression(self):
+        # The exact error message may change in the future.
+        with self.assertRaises(om.OMError):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Variable("X", initially=None)
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+        pass
+
+    def test_context_needs_default_value(self):
+        with self.assertRaisesRegex(om.OMError, "Context X must have a default value"):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Context("X")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+
     def test_fail_this_test(self):
         with self.assertRaisesRegex(om.OMError, "X"):
             _ = "HELLO"
