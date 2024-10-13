@@ -371,7 +371,9 @@ class TestGraphBuilder(unittest.TestCase):
         )
 
     def test_variable_validator(self):
-        with self.assertRaisesRegex(om.OMError, "Variable or Context X failed validation"):
+        with self.assertRaisesRegex(
+            om.OMError, "Variable or Context X failed validation"
+        ):
             _ = (
                 om.GraphBuilder("TEST")
                 .set_starting_state("A")
@@ -393,7 +395,9 @@ class TestGraphBuilder(unittest.TestCase):
             .Action("to_a", next_state="A")
             .Build(n_sims=1)
         )
-        with self.assertRaisesRegex(om.OMError, "Variable or Context X failed validation"):
+        with self.assertRaisesRegex(
+            om.OMError, "Variable or Context X failed validation"
+        ):
             graph.sim(context={"X": 4})
 
     def test_failed_to_evaluate_expression(self):

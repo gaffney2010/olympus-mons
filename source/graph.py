@@ -376,7 +376,9 @@ class GraphBuilder(object):
         self.graph.model_registry[model_name] = model
         return self
 
-    def Context(self, context_name: str, default: Any = None, **kwargs) -> "GraphBuilder":
+    def Context(
+        self, context_name: str, default: Any = None, **kwargs
+    ) -> "GraphBuilder":
         self._mode("Context", context_name)
         if default is None:
             raise OMError(f"Context {context_name} must have a default value")
@@ -385,7 +387,9 @@ class GraphBuilder(object):
             self.graph.validators[context_name] = kwargs["validator"]
         return self
 
-    def Variable(self, variable_name: str, initially: Any = None, **kwargs) -> "GraphBuilder":
+    def Variable(
+        self, variable_name: str, initially: Any = None, **kwargs
+    ) -> "GraphBuilder":
         self._mode("Variable", variable_name)
         self.graph.variables_initially[variable_name] = initially
         if "validator" in kwargs:
