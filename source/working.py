@@ -22,7 +22,7 @@ graph = (
     .RegisterModel("SplitA", SplitA)
     .RegisterModel("IncNumBVisits", IncNumBVisits)
     .Context("total_steps", default=5)
-    .Context("decay_factor", default=0.5, validator="0.0 < decay_factor < 1.0")
+    .Context("decay_factor", default=0.5, validator="(0.0 < decay_factor)&(decay_factor < 1.0)")
     .Variable("num_b_visits", initially=0)
     .State("A", model=om.UDM("SplitA", input=["num_b_visits", "decay_factor"]))
         .Action("to_b", next_state="B").Action("to_c", next_state="C")

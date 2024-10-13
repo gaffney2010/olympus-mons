@@ -171,6 +171,12 @@ class Graph(object):
             return NOT_TRAINABLE_SENTINEL
         return model.sim(restricted_variables)
 
+    def _validate_variables(self, variables: Dict) -> None:
+        for var_name, var_value in variables.items():
+            if validator := self.validators.get(var_name):
+                if not evaluate(validator, {var_name: var_value}):
+                    raise OMError(f"Variable or Context {var_name} failed validation")
+
     def sim(self, **kwargs) -> Dict:
         """
         Simulates the behavior of this Graph from start to finish.
@@ -190,7 +196,7 @@ class Graph(object):
             if k not in self.context:
                 raise OMError(f"Context {k} has not been declared")
             variables[k] = v
-        # TODO: Validators
+        self._validate_variables(variables)
 
         # Start the simulation
         state = self.starting_state
@@ -236,6 +242,7 @@ class Graph(object):
                 ):
                     variables[target] = source
             variables["step"] += 1
+            self._validate_variables(variables)
 
         if kwargs.get("debug") == "screen":
             for data in journal.df.to_dict(orient="records"):
@@ -275,8 +282,7 @@ class GraphBuilder(object):
 
         self.graph.variables_initially = dict()
         self.graph.context = dict()
-        self.graph.variable_validators = dict()
-        self.graph.context_validators = dict()
+        self.graph.validators = dict()
 
     def _materialize_models(self) -> None:
         for state, model_metadata in self.graph.model_metadata_by_name.items():
@@ -371,14 +377,14 @@ class GraphBuilder(object):
         self._mode("Context", context_name)
         self.graph.context[context_name] = default
         if "validator" in kwargs:
-            self.graph.context_validators[context_name] = kwargs["validator"]
+            self.graph.validators[context_name] = kwargs["validator"]
         return self
 
     def Variable(self, variable_name: str, initially: Any = None, **kwargs) -> "GraphBuilder":
         self._mode("Variable", variable_name)
         self.graph.variables_initially[variable_name] = initially
         if "validator" in kwargs:
-            self.graph.variable_validators[variable_name] = kwargs["validator"]
+            self.graph.validators[variable_name] = kwargs["validator"]
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":
