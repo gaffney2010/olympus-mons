@@ -231,6 +231,27 @@ for _ in range(N_SIMS):
 print(f"Avg steps in State B: {num / N_SIMS}")
 ```
 
+### Validators
+
+Like Contexts and Variables, updates allows you to specify a validator.  This time, you can use a built-in pseudovariable, ending in "_delta" to specify the difference between the value and the last value.  Note that delta is only supported on float values.  If you want a validator on the variable only, you can add it to the variable.  If you want a validator on a few variables, you can add a `global_validator` to the header.
+
+```python
+graph = (
+    om.GraphBuilder("Out and back")
+    .global_validator("num_b_visits <= steps")
+    ....
+    .State("B", model=om.ConstModel("to_a_from_b"))
+        .Action("to_a_from_b", next_state="A")
+            .update("num_b_visits", om.IncModel("num_b_visits"), validator="num_b_visits_delta == 1")
+    ....
+```
+
+You may wonder why we want all these validators.  In the next section, we will learn how training data can be used.  But training data is often misencoded.  The validators help you detect this data.  The `train` function takes an `on_error` argument that specifies how to handle when rows are misencoded.
+
+- "record_only":  Must also pass a journal to the the `journal` argument.  It will write error messages to the `error` field.
+- "skip_row":  Will not use the invalid rows in the training data, but assumes the following rows are valid.
+- "skip_graph":  Throw away entire run from starting_state to end_condition.
+
 ### Training
 
 Next we'll assume that we don't know what decay_factor is, and fit it.
