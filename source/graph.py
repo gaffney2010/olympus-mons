@@ -15,11 +15,19 @@ VariableValue = Any
 ActionOrVariable = Union[Action, VariableValue]
 
 NOT_TRAINABLE_SENTINEL = "OM_NOT_TRAINABLE"
-MAX_GAME_LENGTH = 10_000
+MAX_GAME_LENGTH = 5_000
 
 
 class OMError(AssertionError):
     pass
+
+
+def _print_dict(d: Dict) -> None:
+    """Alphabetizes dicts for predictable error messages."""
+    result = list()
+    for k in sorted(list(d.keys())):
+        result.append(f"{k}: {d[k]}")
+    return "{" + ", ".join(result) + "}"
 
 
 class Journal(object):
@@ -122,15 +130,24 @@ class UDM(ModelMetadata):
         self.model_args.update(kwargs.get("model_args", {}))
 
 
-def evaluate(expr, values):
+def evaluate(expr, values, allow_errors: bool = True) -> bool:
     """A layer of abstraction to SymPy's eval() function"""
+    # Need to strip out Nones otherwise this thing breaks for reasons I don't understand
+    values = {k: v for k, v in values.items() if v is not None}
+
     try:
         expr = sympy.sympify(expr)
         for key, value in values.items():
             expr = expr.subs(key, value)
-        return expr
+        if expr == True:
+            return True
+        if expr == False:
+            return False
+        raise Exception("Expected a boolean expression")
     except:
-        raise OMError(f"Could not evaluate expression {expr} with values {values}")
+        if not allow_errors:
+            raise OMError(f"Expression {expr} fails unexpectedly on {values}.")
+        return False
 
 
 class Graph(object):
@@ -174,11 +191,12 @@ class Graph(object):
             return NOT_TRAINABLE_SENTINEL
         return model.sim(restricted_variables)
 
-    def _validate_variables(self, variables: Dict) -> None:
-        for var_name, _ in variables.items():
-            if validator := self.validators.get(var_name):
-                if not evaluate(validator, variables):
-                    raise OMError(f"Variable or Context {var_name} failed validation")
+    def _validate_variables(self, variables: Dict) -> List[str]:
+        result = list()
+        for validator in self.validators:
+            if not evaluate(validator, variables):
+                result.append(validator)
+        return result
 
     def sim(self, **kwargs) -> Dict:
         """
@@ -199,11 +217,14 @@ class Graph(object):
             if k not in self.context:
                 raise OMError(f"Context {k} has not been declared")
             variables[k] = v
-        self._validate_variables(variables)
+        if failed_validators := self._validate_variables(variables):
+            raise OMError(
+                f"Validators {failed_validators} failed for variables {_print_dict(variables)}"
+            )
 
         # Start the simulation
         state = self.starting_state
-        while not evaluate(self.end_condition, variables):
+        while not evaluate(self.end_condition, variables, allow_errors=False):
             if variables["step"] > MAX_GAME_LENGTH:
                 raise OMError(
                     f"Game has exceeded maximum length {MAX_GAME_LENGTH}.  Perhaps you have an infinite loop?"
@@ -245,7 +266,10 @@ class Graph(object):
                 ):
                     variables[target] = source
             variables["step"] += 1
-            self._validate_variables(variables)
+            if failed_validators := self._validate_variables(variables):
+                raise OMError(
+                    f"Validators {failed_validators} failed for variables {_print_dict(variables)}"
+                )
 
         if kwargs.get("debug") == "screen":
             for data in journal.df.to_dict(orient="records"):
@@ -285,7 +309,7 @@ class GraphBuilder(object):
 
         self.graph.variables_initially = dict()
         self.graph.context = dict()
-        self.graph.validators = dict()
+        self.graph.validators = list()
 
     def _materialize_models(self) -> None:
         for state, model_metadata in self.graph.model_metadata_by_name.items():
@@ -384,7 +408,8 @@ class GraphBuilder(object):
             raise OMError(f"Context {context_name} must have a default value")
         self.graph.context[context_name] = default
         if "validator" in kwargs:
-            self.graph.validators[context_name] = kwargs["validator"]
+            # TODO: Check that validator only uses this variable
+            self.graph.validators.append(kwargs["validator"])
         return self
 
     def Variable(
@@ -393,7 +418,8 @@ class GraphBuilder(object):
         self._mode("Variable", variable_name)
         self.graph.variables_initially[variable_name] = initially
         if "validator" in kwargs:
-            self.graph.validators[variable_name] = kwargs["validator"]
+            # TODO: Check that validator only uses this variable
+            self.graph.validators.append(kwargs["validator"])
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":

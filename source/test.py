@@ -313,7 +313,7 @@ class TestGraphBuilder(unittest.TestCase):
     def test_infinite_loop(self):
         with self.assertRaisesRegex(
             om.OMError,
-            "Game has exceeded maximum length 10000.  Perhaps you have an infinite loop?",
+            "Game has exceeded maximum length 5000.  Perhaps you have an infinite loop?",
         ):
             _ = (
                 om.GraphBuilder("TEST")
@@ -372,7 +372,7 @@ class TestGraphBuilder(unittest.TestCase):
 
     def test_variable_validator(self):
         with self.assertRaisesRegex(
-            om.OMError, "Variable or Context X failed validation"
+            om.OMError, "Validators \['X < 3'\] failed for variables {X: 3, step: 3}"
         ):
             _ = (
                 om.GraphBuilder("TEST")
@@ -396,18 +396,19 @@ class TestGraphBuilder(unittest.TestCase):
             .Build(n_sims=1)
         )
         with self.assertRaisesRegex(
-            om.OMError, "Variable or Context X failed validation"
+            om.OMError, "Validators \['X < 3'\] failed for variables {X: 4, step: 0}"
         ):
             graph.sim(context={"X": 4})
 
     def test_failed_to_evaluate_expression(self):
-        # The exact error message may change in the future.
-        with self.assertRaises(om.OMError):
+        with self.assertRaisesRegex(
+            om.OMError, "Validators \['X > 3'\] failed for variables {X: None, step: 0}"
+        ):
             _ = (
                 om.GraphBuilder("TEST")
                 .set_starting_state("A")
                 .set_end_condition("step >= 5")
-                .Variable("X", initially=None)
+                .Variable("X", initially=None, validator="X > 3")
                 .State("A", model=om.ConstModel("to_a"))
                 .Action("to_a", next_state="A")
                 .Build(n_sims=1)
@@ -421,6 +422,19 @@ class TestGraphBuilder(unittest.TestCase):
                 .set_starting_state("A")
                 .set_end_condition("step >= 5")
                 .Context("X")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+
+    def test_end_condition_failure(self):
+        with self.assertRaisesRegex(
+            om.OMError, "Expression 0 >= unknown_var fails unexpectedly on {'step': 0}."
+        ):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= unknown_var")
                 .State("A", model=om.ConstModel("to_a"))
                 .Action("to_a", next_state="A")
                 .Build(n_sims=1)
