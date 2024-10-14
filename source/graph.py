@@ -386,6 +386,14 @@ class GraphBuilder(object):
         # Set metadata
         self.graph.model_metadata_by_name[state] = model_metadata
 
+    def _extract_variables(self, validator: str) -> List[str]:
+        try:
+            expr = sympy.sympify(validator)
+        except:
+            raise OMError(f"Invalid validator {validator}")
+        variables = list(expr.free_symbols)
+        return variables
+
     def set_starting_state(self, starting_state: State) -> "GraphBuilder":
         self._mode("set_starting_state")
         self.graph.starting_state = starting_state
@@ -400,6 +408,9 @@ class GraphBuilder(object):
         self._mode("global_validator")
         if isinstance(validators, str):
             validators = [validators]
+        # Checks that this okay
+        for v in validators:
+            _ = self._extract_variables(v)
         self.graph.validators += validators
         return self
 
@@ -415,12 +426,19 @@ class GraphBuilder(object):
         if default is None:
             raise OMError(f"Context {context_name} must have a default value")
         self.graph.context[context_name] = default
+
         if "validator" in kwargs:
-            # TODO: Check that validator only uses this variable
             validators = kwargs["validator"]
             if not isinstance(validators, list):
                 validators = [validators]
+            for v in validators:
+                for variable in self._extract_variables(v):
+                    if str(variable) != context_name:
+                        raise OMError(
+                            f"Validator {v} uses variable {variable} which is not {context_name}.  Use global_validator instead."
+                        )
             self.graph.validators += validators
+
         return self
 
     def Variable(
@@ -428,12 +446,20 @@ class GraphBuilder(object):
     ) -> "GraphBuilder":
         self._mode("Variable", variable_name)
         self.graph.variables_initially[variable_name] = initially
+
+        # TODO: Consider combining this code with Context
         if "validator" in kwargs:
-            # TODO: Check that validator only uses this variable
             validators = kwargs["validator"]
             if not isinstance(validators, list):
                 validators = [validators]
+            for v in validators:
+                for variable in self._extract_variables(v):
+                    if str(variable) != variable_name:
+                        raise OMError(
+                            f"Validator {v} uses variable {variable} which is not {variable_name}.  Use global_validator instead."
+                        )
             self.graph.validators += validators
+
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":
@@ -490,6 +516,30 @@ class GraphBuilder(object):
                 f"Starting state {self.graph.starting_state} is not in states: {self.graph.states}"
             )
 
+        # Make sure that our variables are not redefined
+        built_in = {"step"}
+        variables = set(self.graph.variables_initially.keys())
+        contexts = set(self.graph.context.keys())
+        for v in variables | contexts:
+            built_in.add(f"{v}_delta")
+        i1, i2, i3 = built_in & variables, built_in & contexts, variables & contexts
+        if i1 or i2:
+            raise OMError(
+                f"Variables {i1 | i2} are built-in special variables and cannot be redefined"
+            )
+        if i3:
+            raise OMError(f"Variables {i3} are defined as both variables and contexts")
+
+        # Make sure all of our validators make sense
+        known_variables = built_in | variables | contexts
+        for v in self.graph.validators:
+            for variable in self._extract_variables(v):
+                if str(variable) not in known_variables:
+                    raise OMError(
+                        f"Validator {v} uses variable {variable} which is not defined"
+                    )
+
+        # Check state transitions
         for k, v in self.graph.next_state_by_action.items():
             if v not in self.graph.states:
                 raise OMError(

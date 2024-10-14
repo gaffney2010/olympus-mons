@@ -454,6 +454,95 @@ class TestGraphBuilder(unittest.TestCase):
             .Build(n_sims=1)
         )
 
+    def test_invalid_validator(self):
+        with self.assertRaisesRegex(om.OMError, "Invalid validator 0 < step < -3"):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .global_validator("0 < step < -3")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+
+    def test_context_validator_only_uses_context_variable(self):
+        with self.assertRaisesRegex(
+            om.OMError,
+            "Validator X \+ Y < 100 uses variable Y which is not X.  Use global_validator instead.",
+        ):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Context("X", default=0, validator="X + Y < 100")
+                .Context("Y")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+
+    def test_not_overwrite_builtin_variables(self):
+        with self.assertRaisesRegex(
+            om.OMError,
+            "Variables {'step'} are built-in special variables and cannot be redefined",
+        ):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Variable("step", initially=0)
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+
+    def test_not_define_variables_and_contexts(self):
+        with self.assertRaisesRegex(
+            om.OMError, "Variables {'X'} are defined as both variables and contexts"
+        ):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Variable("X", initially=0)
+                .Context("X", default=0)
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+
+    def test_global_validators_use_known_variables(self):
+        with self.assertRaisesRegex(
+            om.OMError, "Validator X \+ Y < 100 uses variable Y which is not defined"
+        ):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .global_validator("X + Y < 100")
+                .Variable("X", initially=0)
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+
+    def test_no_delta_variables(self):
+        with self.assertRaisesRegex(
+            om.OMError,
+            "Variables {'X_delta'} are built-in special variables and cannot be redefined",
+        ):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Variable("X", initially=0)
+                .Variable("X_delta", initially=0)
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+
     def test_fail_this_test(self):
         with self.assertRaisesRegex(om.OMError, "X"):
             _ = "HELLO"
