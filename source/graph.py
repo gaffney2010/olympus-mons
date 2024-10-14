@@ -409,7 +409,10 @@ class GraphBuilder(object):
         self.graph.context[context_name] = default
         if "validator" in kwargs:
             # TODO: Check that validator only uses this variable
-            self.graph.validators.append(kwargs["validator"])
+            validators = kwargs["validator"]
+            if not isinstance(validators, list):
+                validators = [validators]
+            self.graph.validators += validators
         return self
 
     def Variable(
@@ -419,7 +422,10 @@ class GraphBuilder(object):
         self.graph.variables_initially[variable_name] = initially
         if "validator" in kwargs:
             # TODO: Check that validator only uses this variable
-            self.graph.validators.append(kwargs["validator"])
+            validators = kwargs["validator"]
+            if not isinstance(validators, list):
+                validators = [validators]
+            self.graph.validators += validators
         return self
 
     def State(self, state: State, **kwargs) -> "GraphBuilder":

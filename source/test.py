@@ -440,6 +440,19 @@ class TestGraphBuilder(unittest.TestCase):
                 .Build(n_sims=1)
             )
 
+    def test_two_validators_happy_path(self):
+        _ = (
+            om.GraphBuilder("TEST")
+            .set_starting_state("A")
+            .set_end_condition("step >= 5")
+            .Variable("X", initially=0, validator="X < 3")
+            .Variable("Y", initially=0, validator=["Y < 3", "Y > -1"])
+            .State("A", model=om.ConstModel("to_a"))
+            .Action("to_a", next_state="A")
+            .update(["X", "Y"], model=om.ConstModel([1, 2]))
+            .Build(n_sims=1)
+        )
+
     def test_fail_this_test(self):
         with self.assertRaisesRegex(om.OMError, "X"):
             _ = "HELLO"
