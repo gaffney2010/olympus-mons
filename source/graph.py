@@ -333,6 +333,7 @@ class GraphBuilder(object):
         header_only = {
             "set_starting_state",
             "set_end_condition",
+            "global_validator",
             "RegisterModel",
             "Variable",
             "Context",
@@ -393,6 +394,13 @@ class GraphBuilder(object):
     def set_end_condition(self, end_condition: str) -> "GraphBuilder":
         self._mode("set_end_condition")
         self.graph.end_condition = end_condition
+        return self
+
+    def global_validator(self, validators: Union[str, List[str]]) -> "GraphBuilder":
+        self._mode("global_validator")
+        if isinstance(validators, str):
+            validators = [validators]
+        self.graph.validators += validators
         return self
 
     def RegisterModel(self, model_name: str, model: Model, **kwargs) -> "GraphBuilder":

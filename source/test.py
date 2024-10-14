@@ -445,6 +445,7 @@ class TestGraphBuilder(unittest.TestCase):
             om.GraphBuilder("TEST")
             .set_starting_state("A")
             .set_end_condition("step >= 5")
+            .global_validator("X <= Y")
             .Variable("X", initially=0, validator="X < 3")
             .Variable("Y", initially=0, validator=["Y < 3", "Y > -1"])
             .State("A", model=om.ConstModel("to_a"))
