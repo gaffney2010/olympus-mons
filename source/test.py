@@ -530,7 +530,7 @@ class TestGraphBuilder(unittest.TestCase):
     def test_no_delta_variables(self):
         with self.assertRaisesRegex(
             om.OMError,
-            "Variables {'X_delta'} are built-in special variables and cannot be redefined",
+            "Variable X_delta cannot contain delta",
         ):
             _ = (
                 om.GraphBuilder("TEST")
@@ -540,6 +540,19 @@ class TestGraphBuilder(unittest.TestCase):
                 .Variable("X_delta", initially=0)
                 .State("A", model=om.ConstModel("to_a"))
                 .Action("to_a", next_state="A")
+                .Build(n_sims=1)
+            )
+
+    def test_delta_variable_validation_violation(self):
+        with self.assertRaisesRegex(om.OMError, "Invalid validator X_delta = 2"):
+            _ = (
+                om.GraphBuilder("TEST")
+                .set_starting_state("A")
+                .set_end_condition("step >= 5")
+                .Variable("X", initially=0, validator="X_delta = 2")
+                .State("A", model=om.ConstModel("to_a"))
+                .Action("to_a", next_state="A")
+                .update("X", model=om.IncModel("X"))
                 .Build(n_sims=1)
             )
 

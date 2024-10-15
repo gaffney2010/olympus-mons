@@ -248,6 +248,7 @@ class Graph(object):
             state = self.next_state_by_action[action]
 
             # Change variables
+            old_vars = {k: v for k, v in variables.items()}
             for update in self.updates_by_action[action]:
                 if (
                     new_variables := self._sim_model_by_name(
@@ -266,6 +267,9 @@ class Graph(object):
                 ):
                     variables[target] = source
             variables["step"] += 1
+            for k, v in old_vars.items():
+                if k.find("delta") >= 0:
+                    variables[f"{k}_delta"] = variables[k] - v
             if failed_validators := self._validate_variables(variables):
                 raise OMError(
                     f"Validators {failed_validators} failed for variables {_print_dict(variables)}"
@@ -433,7 +437,7 @@ class GraphBuilder(object):
                 validators = [validators]
             for v in validators:
                 for variable in self._extract_variables(v):
-                    if str(variable) != context_name:
+                    if str(variable) != context_name and str(variable) != f"{context_name}_delta":
                         raise OMError(
                             f"Validator {v} uses variable {variable} which is not {context_name}.  Use global_validator instead."
                         )
@@ -445,6 +449,8 @@ class GraphBuilder(object):
         self, variable_name: str, initially: Any = None, **kwargs
     ) -> "GraphBuilder":
         self._mode("Variable", variable_name)
+        if variable_name.find("delta") != -1:
+            raise OMError(f"Variable {variable_name} cannot contain delta")
         self.graph.variables_initially[variable_name] = initially
 
         # TODO: Consider combining this code with Context
@@ -454,7 +460,7 @@ class GraphBuilder(object):
                 validators = [validators]
             for v in validators:
                 for variable in self._extract_variables(v):
-                    if str(variable) != variable_name:
+                    if str(variable) != variable_name and str(variable) != f"{variable_name}_delta":
                         raise OMError(
                             f"Validator {v} uses variable {variable} which is not {variable_name}.  Use global_validator instead."
                         )
