@@ -47,6 +47,24 @@ class Journal(object):
         self.df = pd.DataFrame(self.raw, columns=column_order)
 
 
+class BulkTrainer(object):
+    pass
+
+
+class PandasBulkTrainer(BulkTrainer):
+
+    def get_game(self):
+        raise OMError("PandasBulkTrainer must implement get_game()")
+
+
+class PandasDatum(object):
+    def __init__(self, df: pd.DataFrame, context: Dict = None):
+        if not context:
+            context = dict()
+        self.df = df
+        self.context = context
+
+
 class Model(object):
     def __init__(self, name: str = "Default", input: Optional[List] = None, **kwargs):
         self.input = input or dict()
@@ -287,6 +305,65 @@ class Graph(object):
 
         return variables
 
+    def train(self, trainer: BulkTrainer, **kwargs) -> None:        
+        journal = kwargs.get("debug", Journal())
+        if not isinstance(journal, Journal):
+            raise OMError("Debug mode must be a Journal")
+
+        training_input_by_state = defaultdict(list)
+        training_output_by_state = defaultdict(list)
+        training_input_by_variable = defaultdict(list)
+        training_output_by_variable = defaultdict(list)
+        for game in trainer.get_game():
+            tibs, tobs = defaultdict(list), defaultdict(list)
+            uptibs, uptobs = defaultdict(list), defaultdict(list)
+
+            invalid_rows = set()
+            for i, row in game.journal.df.iterrows():
+                # TODO: Compute deltas
+
+                # state models training data
+                state = row["State"]
+                action = row["Action"]
+                model_name = self.states[state]
+                model_metadata = self.model_metadata_by_name[model_name]
+                needed_variables = model_metadata.input
+                variables = {k: v for k, v in row.items() if k in needed_variables}
+                tibs[state].append(variables)
+                tobs[state].append(action)
+
+                # update models training data
+                updates = self.updates_by_action[action]
+                for update in updates:
+                    continue
+# .........................
+                
+                # Mark rows that are invalid
+                if state not in self.states:
+                    invalid_rows.add(i)
+                known_variables = self.built_in | self.variables | self.contexts
+                if self._validate_variables(known_variables):
+                    invalid_rows.add(i)
+                # TODO: Check that no variable is changing without permission
+
+            # Copy valid rows
+            for k, v in tibs.items():
+                for i, vi in enumerate(v):
+                    if i in invalid_rows or i+1 in invalid_rows:
+                        continue
+                    training_input_by_state[k].append(vi)
+                    training_output_by_state[k].append(tobs[k][i])
+                    training_input_by_variable[k].append(uptibs[k][i])
+                    training_output_by_variable[k].append(uptobs[k][i])
+        
+        # Now it's time to train
+        for state, model_name in self.states.items():
+            materialized_model = self.materialized_models_by_name[model_name]
+            materialized_model.train(training_input_by_state[state], training_output_by_state[state])
+        for update, target in self.targets_by_update.items():
+            materialized_model = self.materialized_models_by_name[update]
+            materialized_model.train(training_input_by_variable[target], training_output_by_variable[target])
+
 
 class GraphBuilder(object):
     def __init__(self, name):
@@ -319,8 +396,8 @@ class GraphBuilder(object):
         for state, model_metadata in self.graph.model_metadata_by_name.items():
             model = self.graph.model_registry[model_metadata.name]
             self.graph.materialized_models_by_name[state] = model(
-                model_metadata.name,
-                model_metadata.input,
+                name=model_metadata.name,
+                input=model_metadata.input,
                 **model_metadata.model_args,
             )
 
@@ -371,7 +448,7 @@ class GraphBuilder(object):
 
     def _set_general_model(
         self,
-        state: State,
+        state: State,  # TODO: Rename here and in materialize_models
         model_metadata: ModelMetadata,
         **kwargs,
     ) -> None:
@@ -523,12 +600,12 @@ class GraphBuilder(object):
             )
 
         # Make sure that our variables are not redefined
-        built_in = {"step"}
+        self.built_in = {"step"}
         variables = set(self.graph.variables_initially.keys())
         contexts = set(self.graph.context.keys())
         for v in variables | contexts:
-            built_in.add(f"{v}_delta")
-        i1, i2, i3 = built_in & variables, built_in & contexts, variables & contexts
+            self.built_in.add(f"{v}_delta")
+        i1, i2, i3 = self.built_in & variables, self.built_in & contexts, variables & contexts
         if i1 or i2:
             raise OMError(
                 f"Variables {i1 | i2} are built-in special variables and cannot be redefined"
@@ -537,7 +614,7 @@ class GraphBuilder(object):
             raise OMError(f"Variables {i3} are defined as both variables and contexts")
 
         # Make sure all of our validators make sense
-        known_variables = built_in | variables | contexts
+        known_variables = self.built_in | variables | contexts
         for v in self.graph.validators:
             for variable in self._extract_variables(v):
                 if str(variable) not in known_variables:
@@ -552,11 +629,11 @@ class GraphBuilder(object):
                     f"Next state {v} specified by Action {k} is not in states: {self.graph.states}"
                 )
 
-        self._materialize_models()
-
         # We want to make sure that the models all return the correct values
         n_sims = kwargs.get("n_sims", 100)
         for _ in range(n_sims):
+            self._materialize_models()
             self.graph.sim(untrained_mode=True)
 
+        self._materialize_models()
         return self.graph

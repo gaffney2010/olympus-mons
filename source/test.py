@@ -556,6 +556,15 @@ class TestGraphBuilder(unittest.TestCase):
                 .Build(n_sims=1)
             )
 
+    def test_invalid_states_are_not_used(self):
+        pass
+
+    def test_invalid_updates_are_not_used(self):
+        pass
+
+    def test_passing_non_journal_to_train_fails(self):
+        pass
+
     def test_fail_this_test(self):
         with self.assertRaisesRegex(om.OMError, "X"):
             _ = "HELLO"

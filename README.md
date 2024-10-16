@@ -269,7 +269,7 @@ import olympusmons as om
 
 
 class SplitA(om.Model):
-    def __init__(self):
+    def __init__(self, **kwargs):
         self.is_fit = False
         self.decay_factor = None
         super().__init__(**kwargs)
