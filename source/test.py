@@ -154,20 +154,20 @@ class TestGraphBuilder(unittest.TestCase):
         self._journal_compare(
             journal,
             [
-                ",State,Action,step,num_b_visits",
-                "0,A,to_b,0,0",
-                "1,B,to_a_from_b,1,0",
-                "2,A,to_b,2,1",
-                "3,B,to_a_from_b,3,1",
-                "4,A,to_c,4,2",
-                "5,C,to_a_from_c,5,2",
-                "6,A,to_b,6,2",
-                "7,B,to_a_from_b,7,2",
-                "8,A,to_b,8,3",
-                "9,B,to_a_from_b,9,3",
+                ",State,Action,step,num_b_visits,num_b_visits_delta",
+                "0,A,to_b,0,0,0",
+                "1,B,to_a_from_b,1,0,0",
+                "2,A,to_b,2,1,1",
+                "3,B,to_a_from_b,3,1,0",
+                "4,A,to_c,4,2,1",
+                "5,C,to_a_from_c,5,2,0",
+                "6,A,to_b,6,2,0",
+                "7,B,to_a_from_b,7,2,0",
+                "8,A,to_b,8,3,1",
+                "9,B,to_a_from_b,9,3,0",
             ],
         )
-        self.assertDictEqual(final_vars, {"num_b_visits": 4, "step": 10})
+        self.assertDictEqual(final_vars, {"num_b_visits": 4, "num_b_visits_delta": 1, "step": 10})
 
     def test_starting_state_is_set(self):
         with self.assertRaisesRegex(om.OMError, "No starting state specified"):
@@ -211,7 +211,7 @@ class TestGraphBuilder(unittest.TestCase):
             )
 
     def test_state_model_is_string_or_model(self):
-        with self.assertRaisesRegex(om.OMError, "Model for State A must be a Model"):
+        with self.assertRaisesRegex(om.OMError, "Model 1 must be a Model"):
             _ = (
                 om.GraphBuilder("TEST")
                 .set_starting_state("A")
@@ -372,7 +372,7 @@ class TestGraphBuilder(unittest.TestCase):
 
     def test_variable_validator(self):
         with self.assertRaisesRegex(
-            om.OMError, "Validators \['X < 3'\] failed for variables {X: 3, step: 3}"
+            om.OMError, "Validators \[X < 3\] failed for variables {X: 3, X_delta: 1, step: 3}"
         ):
             _ = (
                 om.GraphBuilder("TEST")
@@ -396,13 +396,13 @@ class TestGraphBuilder(unittest.TestCase):
             .Build(n_sims=1)
         )
         with self.assertRaisesRegex(
-            om.OMError, "Validators \['X < 3'\] failed for variables {X: 4, step: 0}"
+            om.OMError, "Validators \[X < 3\] failed for variables {X: 4, X_delta: 0, step: 0}"
         ):
             graph.sim(context={"X": 4})
 
     def test_failed_to_evaluate_expression(self):
         with self.assertRaisesRegex(
-            om.OMError, "Validators \['X > 3'\] failed for variables {X: None, step: 0}"
+            om.OMError, "Validators \[X > 3\] failed for variables {X: None, X_delta: 0, step: 0}"
         ):
             _ = (
                 om.GraphBuilder("TEST")
@@ -499,7 +499,7 @@ class TestGraphBuilder(unittest.TestCase):
 
     def test_not_define_variables_and_contexts(self):
         with self.assertRaisesRegex(
-            om.OMError, "Variables {'X'} are defined as both variables and contexts"
+            om.OMError, "X is redefined"
         ):
             _ = (
                 om.GraphBuilder("TEST")

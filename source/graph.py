@@ -1,18 +1,19 @@
 from collections import defaultdict
+import copy
 import random
 from typing import Any, Dict, List, Optional, Union
 
+import attr
 import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
 import sympy
 
 
-State = str
-Action = str
-Variable = str
+# TODO: Revisit these types
+Model = Any
 VariableValue = Any
-ActionOrVariable = Union[Action, VariableValue]
+ActionOrVariable = Any
 
 NOT_TRAINABLE_SENTINEL = "OM_NOT_TRAINABLE"
 MAX_GAME_LENGTH = 5_000
@@ -35,7 +36,7 @@ class Journal(object):
         self.df = None
         self.raw = defaultdict(list)
 
-    def _add(self, action: ActionOrVariable, state: State, variables: Dict):
+    def _add(self, action: ActionOrVariable, state: str, variables: Dict):
         self.raw["State"].append(state)
         self.raw["Action"].append(action)
         for k, v in variables.items():
@@ -116,7 +117,7 @@ class IncModelImpl(Model):
 
 
 class ConstModel(ModelMetadata):
-    def __init__(self, action: Action = None, **kwargs):
+    def __init__(self, action: Optional[str] = None, **kwargs):
         if not action:
             raise OMError("ConstModel must specify an action")
         self.action = action
@@ -148,24 +149,64 @@ class UDM(ModelMetadata):
         self.model_args.update(kwargs.get("model_args", {}))
 
 
-def evaluate(expr, values, allow_errors: bool = True) -> bool:
-    """A layer of abstraction to SymPy's eval() function"""
-    # Need to strip out Nones otherwise this thing breaks for reasons I don't understand
-    values = {k: v for k, v in values.items() if v is not None}
+@attr.s()
+class State(object):
+    name: str = attr.ib()
+    # TODO: Refactor ModelMetadata
+    metadata: ModelMetadata = attr.ib()
+    reachable_actions: List["Action"] = attr.ib(default=attr.Factory(list))
 
-    try:
-        expr = sympy.sympify(expr)
-        for key, value in values.items():
-            expr = expr.subs(key, value)
-        if expr == True:
-            return True
-        if expr == False:
+
+@attr.s()
+class Action(object):
+    name: str = attr.ib()
+    next_state: str = attr.ib()
+    updates: List["Update"] = attr.ib(default=attr.Factory(list))
+
+
+@attr.s()
+class Update(object):
+    name: str = attr.ib()
+    metadata: ModelMetadata = attr.ib()
+    targets: str = attr.ib()
+
+
+# TODO: Consider using this, can make the eval function a method, and you can specify allow variables
+class Expr(object):
+    def __init__(self, expr: str):
+        self.expr = expr
+        try:
+            self.symp_expr = sympy.sympify(expr)
+        except:
+            raise OMError(f"Invalid validator {expr}")
+    
+    def to_dict(self):
+        return {"expr": self.expr}
+
+    def extract_variables(self) -> List[str]:
+        return list(self.symp_expr.free_symbols)
+    
+    def evaluate(self, values, allow_errors: bool = True) -> bool:
+        """A layer of abstraction to SymPy's eval() function"""
+        # Need to strip out Nones otherwise this thing breaks for reasons I don't understand
+        values = {k: v for k, v in values.items() if v is not None}
+
+        expr = self.symp_expr
+        try:
+            for key, value in values.items():
+                expr = expr.subs(key, value)
+            if expr == True:
+                return True
+            if expr == False:
+                return False
+            raise Exception("Expected a boolean expression")
+        except:
+            if not allow_errors:
+                raise OMError(f"Expression {expr} fails unexpectedly on {values}.")
             return False
-        raise Exception("Expected a boolean expression")
-    except:
-        if not allow_errors:
-            raise OMError(f"Expression {expr} fails unexpectedly on {values}.")
-        return False
+
+    def __repr__(self):
+        return self.expr
 
 
 class Graph(object):
@@ -177,8 +218,8 @@ class Graph(object):
         for state in self.states:
             G.add_node(state)
 
-        for state, actions in self.reachable_actions_from_state.items():
-            for action in actions:
+        for _, state in self.states.items():
+            for action in state.reachable_actions:
                 G.add_edge(state, self.next_state_by_action[action], label=action)
 
         # Define position for nodes (using spring layout for better positioning)
@@ -193,7 +234,7 @@ class Graph(object):
         plt.show()
 
     @staticmethod
-    def _variable_belongs_to_model_input(variable: Variable, model: Model) -> bool:
+    def _variable_belongs_to_model_input(variable: str, model: Model) -> bool:
         if variable in ("step",):
             # Special variable, always include
             return True
@@ -202,7 +243,7 @@ class Graph(object):
     def _sim_model_by_name(
         self, name: str, variables: Dict, **kwargs
     ) -> ActionOrVariable:
-        model = self.materialized_models_by_name[name]
+        model = self.materialized_models[name]
         restricted_variables = {k: v for k, v in variables.items() if k in model.input}
         if kwargs.get("untrained_mode") and model.trainable:
             # This is so we can test correctness without training
@@ -212,7 +253,7 @@ class Graph(object):
     def _validate_variables(self, variables: Dict) -> List[str]:
         result = list()
         for validator in self.validators:
-            if not evaluate(validator, variables):
+            if not validator.evaluate(variables):
                 result.append(validator)
         return result
 
@@ -228,69 +269,72 @@ class Graph(object):
         journal = Journal()
 
         # Set up the variables
-        variables = {k: v for k, v in self.variables_initially.items()}
-        variables.update(self.context)
-        variables["step"] = 0
+        substate = copy.deepcopy(self.substate)
+        substate["step"] = 0
         for k, v in kwargs.get("context", {}).items():
-            if k not in self.context:
+            if k not in self.context_names:
                 raise OMError(f"Context {k} has not been declared")
-            variables[k] = v
-        if failed_validators := self._validate_variables(variables):
+            substate[k] = v
+        if failed_validators := self._validate_variables(substate):
             raise OMError(
-                f"Validators {failed_validators} failed for variables {_print_dict(variables)}"
+                f"Validators {failed_validators} failed for variables {_print_dict(substate)}"
             )
 
         # Start the simulation
-        state = self.starting_state
-        while not evaluate(self.end_condition, variables, allow_errors=False):
-            if variables["step"] > MAX_GAME_LENGTH:
+        state_name = self.starting_state
+        while not self.end_condition.evaluate(substate, allow_errors=False):
+            if substate["step"] > MAX_GAME_LENGTH:
                 raise OMError(
                     f"Game has exceeded maximum length {MAX_GAME_LENGTH}.  Perhaps you have an infinite loop?"
                 )
 
             # Run the current model
             if (
-                action := self._sim_model_by_name(state, variables, **kwargs)
+                action_name := self._sim_model_by_name(state_name, substate, **kwargs)
             ) == NOT_TRAINABLE_SENTINEL:
-                action = random.choice(self.reachable_actions_from_state[state])
+                action_name = random.choice(self.states[state_name].reachable_actions)
 
-            if action not in self.reachable_actions_from_state[state]:
+            if action_name not in self.states[state_name].reachable_actions:
                 raise OMError(
-                    f"Model for State {state} returns Action {action} that is not reachable"
+                    f"Model for State {state_name} returns Action {action_name} that is not reachable"
                 )
 
             # Record data before we change state or variables
-            journal._add(action, state, variables)
+            journal._add(action_name, state_name, substate)
 
             # Change state
-            state = self.next_state_by_action[action]
+            state_name = self.actions[action_name].next_state
 
             # Change variables
-            old_vars = {k: v for k, v in variables.items()}
-            for update in self.updates_by_action[action]:
+            old_vars = copy.deepcopy(substate)
+            for update_name in self.actions[action_name].updates:
                 if (
                     new_variables := self._sim_model_by_name(
-                        update, variables, **kwargs
+                        update_name, substate, **kwargs
                     )
                 ) == NOT_TRAINABLE_SENTINEL:
                     continue
                 if not isinstance(new_variables, list):
                     new_variables = [new_variables]
-                if len(new_variables) != len(self.targets_by_update[update]):
+                if len(new_variables) != len(self.updates[update_name].targets):
                     raise OMError(
-                        f"Model for State {state} returns {len(new_variables)} variables, but {len(self.targets_by_update[update])} variables were specified"
+                        f"Model for State {state_name} returns {len(new_variables)} variables, but {len(self.updates[update_name].targets)} variables were specified"
                     )
                 for target, source in zip(
-                    self.targets_by_update[update], new_variables
+                    self.updates[update_name].targets, new_variables
                 ):
-                    variables[target] = source
-            variables["step"] += 1
+                    substate[target] = source
+            substate["step"] += 1
             for k, v in old_vars.items():
                 if k.find("delta") >= 0:
-                    variables[f"{k}_delta"] = variables[k] - v
-            if failed_validators := self._validate_variables(variables):
+                    try:
+                        substate[k] = substate[k[:-6]] - old_vars[k[:-6]]
+                    except:
+                        # This will fail on strings and stuff
+                        pass
+            if failed_validators := self._validate_variables(substate):
                 raise OMError(
-                    f"Validators {failed_validators} failed for variables {_print_dict(variables)}"
+                    f"Validators {failed_validators} failed for variables {_print_dict(substate)}"
                 )
 
         if kwargs.get("debug") == "screen":
@@ -303,24 +347,21 @@ class Graph(object):
             kwargs.get("debug").raw = journal.raw
             kwargs.get("debug").csv = journal.df.to_csv()
 
-        return variables
+        return substate
 
     def train(self, trainer: BulkTrainer, **kwargs) -> None:        
         journal = kwargs.get("debug", Journal())
         if not isinstance(journal, Journal):
             raise OMError("Debug mode must be a Journal")
 
-        training_input_by_state = defaultdict(list)
-        training_output_by_state = defaultdict(list)
-        training_input_by_variable = defaultdict(list)
-        training_output_by_variable = defaultdict(list)
+        training_input = defaultdict(list)
+        training_output = defaultdict(list)
         for game in trainer.get_game():
-            tibs, tobs = defaultdict(list), defaultdict(list)
-            uptibs, uptobs = defaultdict(list), defaultdict(list)
+            ti, to = defaultdict(list), defaultdict(list)
 
             invalid_rows = set()
             for i, row in game.journal.df.iterrows():
-                # TODO: Compute deltas
+                # TODO: Compute deltas and steps, overwriting what's there, if anything
 
                 # state models training data
                 state = row["State"]
@@ -329,8 +370,8 @@ class Graph(object):
                 model_metadata = self.model_metadata_by_name[model_name]
                 needed_variables = model_metadata.input
                 variables = {k: v for k, v in row.items() if k in needed_variables}
-                tibs[state].append(variables)
-                tobs[state].append(action)
+                ti[state].append(variables)
+                to[state].append(action)
 
                 # update models training data
                 updates = self.updates_by_action[action]
@@ -347,14 +388,12 @@ class Graph(object):
                 # TODO: Check that no variable is changing without permission
 
             # Copy valid rows
-            for k, v in tibs.items():
+            for k, v in ti.items():
                 for i, vi in enumerate(v):
                     if i in invalid_rows or i+1 in invalid_rows:
                         continue
-                    training_input_by_state[k].append(vi)
-                    training_output_by_state[k].append(tobs[k][i])
-                    training_input_by_variable[k].append(uptibs[k][i])
-                    training_output_by_variable[k].append(uptobs[k][i])
+                    training_input[k].append(vi)
+                    training_output[k].append(to[k][i])
         
         # Now it's time to train
         for state, model_name in self.states.items():
@@ -365,41 +404,48 @@ class Graph(object):
             materialized_model.train(training_input_by_variable[target], training_output_by_variable[target])
 
 
+def model_factory(model_registry, metadata: ModelMetadata):
+    model = model_registry[metadata.name]
+    return model(
+        name=metadata.name,
+        input=metadata.input,
+        **metadata.model_args,
+    )
+
+
 class GraphBuilder(object):
     def __init__(self, name):
         self.graph = Graph()
         self.graph.name = name
 
+        # Mode variables
         self.mode = "Initial"
         self.mode_detail = None
-        self.body_turnstile = False
+        self.mode_body_turnstile = False
 
+        # Headers
         self.graph.starting_state = None
         self.graph.end_condition = None
 
-        self.graph.states = list()
-        self.graph.reachable_actions_from_state = defaultdict(list)
+        # Models.  Every state and update will have exactly one model.
         self.graph.model_registry = dict()
 
-        self.graph.next_state_by_action = dict()
-        self.graph.updates_by_action = defaultdict(list)
-        self.graph.targets_by_update = dict()
+        # Keyed by name, must be universally unique
+        self.graph.states = dict()
+        self.graph.actions = dict()
+        self.graph.updates = dict()
 
-        self.graph.model_metadata_by_name = dict()
-        self.graph.materialized_models_by_name = dict()
+        # We store built-ins, variables, pseudovariables, and contexts all in substate
+        self.graph.substate = dict()  # Gets deep copied to `substate` at start of sim
+        self.graph.variable_names = list()
+        self.graph.pseudovariables_names = list()
+        self.graph.context_names = list()
 
-        self.graph.variables_initially = dict()
-        self.graph.context = dict()
+        # These all act on substate
         self.graph.validators = list()
 
-    def _materialize_models(self) -> None:
-        for state, model_metadata in self.graph.model_metadata_by_name.items():
-            model = self.graph.model_registry[model_metadata.name]
-            self.graph.materialized_models_by_name[state] = model(
-                name=model_metadata.name,
-                input=model_metadata.input,
-                **model_metadata.model_args,
-            )
+        # TODO: Comment this
+        self.graph.materialized_models = dict()
 
     def _mode(self, probe: str, probe_detail: str = "") -> None:
         needed_mode = {
@@ -419,10 +465,10 @@ class GraphBuilder(object):
             "Variable",
             "Context",
         }
-        if probe in header_only and self.body_turnstile:
+        if probe in header_only and self.mode_body_turnstile:
             raise OMError(f"Cannot run function {probe} in body mode.")
         if "State" == probe:
-            self.body_turnstile = True
+            self.mode_body_turnstile = True
 
         if probe in ("RegisterModel", "Variable", "State", "Context"):
             self.mode = probe
@@ -446,14 +492,87 @@ class GraphBuilder(object):
                 probe_detail = ",".join(probe_detail)
             self.mode_detail = self.mode_detail + [probe_detail]
 
-    def _set_general_model(
-        self,
-        state: State,  # TODO: Rename here and in materialize_models
-        model_metadata: ModelMetadata,
-        **kwargs,
-    ) -> None:
+    def set_starting_state(self, starting_state: str) -> "GraphBuilder":
+        self._mode("set_starting_state")
+        self.graph.starting_state = starting_state
+        return self
+
+    def set_end_condition(self, end_condition: str) -> "GraphBuilder":
+        self._mode("set_end_condition")
+        self.graph.end_condition = Expr(end_condition)
+        return self
+
+    def global_validator(self, validators: Union[str, List[str]]) -> "GraphBuilder":
+        self._mode("global_validator")
+        if isinstance(validators, str):
+            validators = [validators]
+        self.graph.validators += [Expr(v) for v in validators]
+        return self
+
+    def RegisterModel(self, model_name: str, model: Model, **kwargs) -> "GraphBuilder":
+        self._mode("RegisterModel", model_name)
+        self.graph.model_registry[model_name] = model
+        return self
+
+    def _add_validator(self, validator: str, only_contains: str) -> None:
+        validator = Expr(validator)
+        for variable in validator.extract_variables():
+            if str(variable) != only_contains and str(variable) != f"{only_contains}_delta":
+                raise OMError(
+                    f"Validator {validator} uses variable {variable} which is not {only_contains}.  Use global_validator instead."
+                    )
+        self.graph.validators.append(validator)
+
+    def Context(
+        self, context_name: str, default: Any = None, **kwargs
+    ) -> "GraphBuilder":
+        self._mode("Context", context_name)
+        if default is None:
+            raise OMError(f"Context {context_name} must have a default value")
+        if context_name in self.graph.substate:
+            raise OMError(f"{context_name} is redefined")
+        self.graph.substate[context_name] = default
+        self.graph.context_names.append(context_name)
+
+        delta_var = f"{context_name}_delta"
+        self.graph.substate[delta_var] = 0
+        self.graph.context_names.append(delta_var)
+
+        if validators := kwargs.get("validator"):
+            if not isinstance(validators, list):
+                validators = [validators]
+            for v in validators:
+                self._add_validator(v, context_name)
+
+        return self
+
+    def Variable(
+        self, variable_name: str, **kwargs
+    ) -> "GraphBuilder":
+        self._mode("Variable", variable_name)
+        if variable_name.find("delta") != -1:
+            raise OMError(f"Variable {variable_name} cannot contain delta")
+        if variable_name in self.graph.substate:
+            raise OMError(f"{variable_name} is redefined")
+        self.graph.substate[variable_name] = kwargs.get("initially")
+
+        delta_var = f"{variable_name}_delta"
+        self.graph.substate[delta_var] = 0
+        self.graph.variable_names.append(delta_var)
+
+        if validators := kwargs.get("validator"):
+            if not isinstance(validators, list):
+                validators = [validators]
+            for v in validators:
+                self._add_validator(v, variable_name)
+
+        return self
+
+    def _valiadate_metadata(
+        self, model_metadata: ModelMetadata,
+    ) -> ModelMetadata:
         if not isinstance(model_metadata, ModelMetadata):
-            raise OMError(f"Model for State {state} must be a Model")
+            raise OMError(f"Model {model_metadata} must be a Model")
 
         # Check against registry
         if model_metadata._om_model_id:
@@ -464,111 +583,38 @@ class GraphBuilder(object):
         if model_metadata.name not in self.graph.model_registry:
             raise OMError(f"UDM {model_metadata.name} is not registered")
 
-        # Set metadata
-        self.graph.model_metadata_by_name[state] = model_metadata
+        return model_metadata
 
-    def _extract_variables(self, validator: str) -> List[str]:
-        try:
-            expr = sympy.sympify(validator)
-        except:
-            raise OMError(f"Invalid validator {validator}")
-        variables = list(expr.free_symbols)
-        return variables
-
-    def set_starting_state(self, starting_state: State) -> "GraphBuilder":
-        self._mode("set_starting_state")
-        self.graph.starting_state = starting_state
-        return self
-
-    def set_end_condition(self, end_condition: str) -> "GraphBuilder":
-        self._mode("set_end_condition")
-        self.graph.end_condition = end_condition
-        return self
-
-    def global_validator(self, validators: Union[str, List[str]]) -> "GraphBuilder":
-        self._mode("global_validator")
-        if isinstance(validators, str):
-            validators = [validators]
-        # Checks that this okay
-        for v in validators:
-            _ = self._extract_variables(v)
-        self.graph.validators += validators
-        return self
-
-    def RegisterModel(self, model_name: str, model: Model, **kwargs) -> "GraphBuilder":
-        self._mode("RegisterModel", model_name)
-        self.graph.model_registry[model_name] = model
-        return self
-
-    def Context(
-        self, context_name: str, default: Any = None, **kwargs
-    ) -> "GraphBuilder":
-        self._mode("Context", context_name)
-        if default is None:
-            raise OMError(f"Context {context_name} must have a default value")
-        self.graph.context[context_name] = default
-
-        if "validator" in kwargs:
-            validators = kwargs["validator"]
-            if not isinstance(validators, list):
-                validators = [validators]
-            for v in validators:
-                for variable in self._extract_variables(v):
-                    if str(variable) != context_name and str(variable) != f"{context_name}_delta":
-                        raise OMError(
-                            f"Validator {v} uses variable {variable} which is not {context_name}.  Use global_validator instead."
-                        )
-            self.graph.validators += validators
-
-        return self
-
-    def Variable(
-        self, variable_name: str, initially: Any = None, **kwargs
-    ) -> "GraphBuilder":
-        self._mode("Variable", variable_name)
-        if variable_name.find("delta") != -1:
-            raise OMError(f"Variable {variable_name} cannot contain delta")
-        self.graph.variables_initially[variable_name] = initially
-
-        # TODO: Consider combining this code with Context
-        if "validator" in kwargs:
-            validators = kwargs["validator"]
-            if not isinstance(validators, list):
-                validators = [validators]
-            for v in validators:
-                for variable in self._extract_variables(v):
-                    if str(variable) != variable_name and str(variable) != f"{variable_name}_delta":
-                        raise OMError(
-                            f"Validator {v} uses variable {variable} which is not {variable_name}.  Use global_validator instead."
-                        )
-            self.graph.validators += validators
-
-        return self
-
-    def State(self, state: State, **kwargs) -> "GraphBuilder":
-        self._mode("State", state)
-        self.graph.states.append(state)
-
+    def State(self, state_name: str, **kwargs) -> "GraphBuilder":
+        self._mode("State", state_name)
         if "model" not in kwargs:
-            raise OMError(f"State {state} doesn't specify a model")
-        self._set_general_model(state, kwargs["model"], **kwargs)
+            raise OMError(f"State {state_name} doesn't specify a model")
+        
+        self.graph.states[state_name] = State(
+            name=state_name,
+            metadata=self._valiadate_metadata(kwargs["model"])
+        )
 
         return self
 
-    def Action(self, action: Action, **kwargs) -> "GraphBuilder":
-        self._mode("Action", action)
-
-        self.graph.reachable_actions_from_state[self.mode_detail[0]].append(action)
-
+    def Action(self, action_name: Action, **kwargs) -> "GraphBuilder":
+        self._mode("Action", action_name)
         if "next_state" not in kwargs:
-            raise OMError(f"Action {action} doesn't specify a next_state")
-        self.graph.next_state_by_action[action] = kwargs["next_state"]
+            raise OMError(f"Action {action_name} doesn't specify a next_state")
+
+        on_state = self.mode_detail[0]
+        self.graph.states[on_state].reachable_actions.append(action_name)
+
+        self.graph.actions[action_name] = Action(
+            name=action_name,
+            next_state=kwargs["next_state"]
+        )
 
         return self
 
-    def _get_update_name(self, _: List[str]) -> str:
+    def _get_update_name(self, var_names: List[str]) -> str:
         # This has to be universally unique
-        return "::".join(self.mode_detail) + ":" + str(random.randint(0, 1000000))
+        return "::".join(self.mode_detail) + ":" + ",".join(var_names) + "?" + str(random.randint(0, 1000000))
 
     def update(
         self, variable_names: Union[str, List[str]], model: ModelMetadata, **kwargs
@@ -578,14 +624,17 @@ class GraphBuilder(object):
             variable_names = [variable_names]
 
         for variable_name in variable_names:
-            if variable_name not in self.graph.variables_initially:
+            if variable_name not in self.graph.substate:
                 raise OMError(f"Variable {variable_name} is not declared")
 
         update_name = self._get_update_name(variable_names)
-        self.graph.updates_by_action[self.mode_detail[1]].append(update_name)
-        self.graph.targets_by_update[update_name] = variable_names
+        self.graph.actions[self.mode_detail[1]].updates.append(update_name)
 
-        self._set_general_model(update_name, model, **kwargs)
+        self.graph.updates[update_name] = Update(
+            name=update_name,
+            metadata=self._valiadate_metadata(model),
+            targets=variable_names,
+        )
 
         return self
 
@@ -596,44 +645,40 @@ class GraphBuilder(object):
             raise OMError("No end condition specified")
         if self.graph.starting_state not in self.graph.states:
             raise OMError(
-                f"Starting state {self.graph.starting_state} is not in states: {self.graph.states}"
+                f"Starting state {self.graph.starting_state} is not in states: {list(self.graph.states.keys())}"
             )
 
         # Make sure that our variables are not redefined
         self.built_in = {"step"}
-        variables = set(self.graph.variables_initially.keys())
-        contexts = set(self.graph.context.keys())
-        for v in variables | contexts:
-            self.built_in.add(f"{v}_delta")
-        i1, i2, i3 = self.built_in & variables, self.built_in & contexts, variables & contexts
-        if i1 or i2:
+        if i1 := self.built_in & self.graph.substate.keys():
             raise OMError(
-                f"Variables {i1 | i2} are built-in special variables and cannot be redefined"
+                f"Variables {i1} are built-in special variables and cannot be redefined"
             )
-        if i3:
-            raise OMError(f"Variables {i3} are defined as both variables and contexts")
 
         # Make sure all of our validators make sense
-        known_variables = self.built_in | variables | contexts
+        known_variables = self.built_in | self.graph.substate.keys()
         for v in self.graph.validators:
-            for variable in self._extract_variables(v):
+            for variable in v.extract_variables():
                 if str(variable) not in known_variables:
                     raise OMError(
                         f"Validator {v} uses variable {variable} which is not defined"
                     )
 
         # Check state transitions
-        for k, v in self.graph.next_state_by_action.items():
-            if v not in self.graph.states:
+        for action_name, action in self.graph.actions.items():
+            if action.next_state not in self.graph.states:
                 raise OMError(
-                    f"Next state {v} specified by Action {k} is not in states: {self.graph.states}"
+                    f"Next state {action.next_state} specified by Action {action_name} is not in states: {list(self.graph.states.keys())}"
                 )
 
         # We want to make sure that the models all return the correct values
         n_sims = kwargs.get("n_sims", 100)
         for _ in range(n_sims):
-            self._materialize_models()
+            for name, state_or_update in dict(self.graph.states, **self.graph.updates).items():
+                self.graph.materialized_models[name] = model_factory(self.graph.model_registry, state_or_update.metadata)
             self.graph.sim(untrained_mode=True)
 
-        self._materialize_models()
+        # TODO: Make sure I check that updates and states are uniquely named
+        for name, state_or_update in dict(self.graph.states, **self.graph.updates).items():
+            self.graph.materialized_models[name] = model_factory(self.graph.model_registry, state_or_update.metadata)
         return self.graph
