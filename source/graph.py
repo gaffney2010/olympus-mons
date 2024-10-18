@@ -35,14 +35,19 @@ class Journal(object):
     def __init__(self):
         self.df = None
         self.raw = defaultdict(list)
+        self.errors = list()
 
-    def _add(self, action: ActionOrVariable, state: str, variables: Dict):
+    def _record_error(self, error: Dict) -> None:
+        # TODO: Better journal loggoing
+        self.errors.append(error)
+
+    def _add(self, action: ActionOrVariable, state: str, variables: Dict) -> None:
         self.raw["State"].append(state)
         self.raw["Action"].append(action)
         for k, v in variables.items():
             self.raw[k].append(v)
 
-    def _build_df(self):
+    def _build_df(self) -> None:
         column_order = ["State", "Action", "step"]
         column_order += [k for k in self.raw.keys() if k not in column_order]
         self.df = pd.DataFrame(self.raw, columns=column_order)
@@ -257,6 +262,31 @@ class Graph(object):
                 result.append(validator)
         return result
 
+    def _setup_substate(self, context: Dict) -> Dict:
+        substate = copy.deepcopy(self.substate)
+        substate["step"] = 0
+        for k, v in context.items():
+            if k not in self.context_names:
+                raise OMError(f"Context {k} has not been declared")
+            substate[k] = v
+        if failed_validators := self._validate_variables(substate):
+            raise OMError(
+                f"Validators {failed_validators} failed for variables {_print_dict(substate)}"
+            )
+        return substate
+
+    def _update_builtins(self, substate: Dict, old_vars: Dict) -> Dict:
+        if "step" not in old_vars:
+            old_vars["step"] = -1
+        substate["step"] = old_vars["step"] + 1
+        for k, v in old_vars.items():
+            if k.find("delta") >= 0:
+                try:
+                    substate[k] = substate[k[:-6]] - old_vars[k[:-6]]
+                except:
+                    # This will fail on strings and stuff
+                    pass
+
     def sim(self, **kwargs) -> Dict:
         """
         Simulates the behavior of this Graph from start to finish.
@@ -269,16 +299,7 @@ class Graph(object):
         journal = Journal()
 
         # Set up the variables
-        substate = copy.deepcopy(self.substate)
-        substate["step"] = 0
-        for k, v in kwargs.get("context", {}).items():
-            if k not in self.context_names:
-                raise OMError(f"Context {k} has not been declared")
-            substate[k] = v
-        if failed_validators := self._validate_variables(substate):
-            raise OMError(
-                f"Validators {failed_validators} failed for variables {_print_dict(substate)}"
-            )
+        substate = self._setup_substate(kwargs.get("context", {}))
 
         # Start the simulation
         state_name = self.starting_state
@@ -324,14 +345,8 @@ class Graph(object):
                     self.updates[update_name].targets, new_variables
                 ):
                     substate[target] = source
-            substate["step"] += 1
-            for k, v in old_vars.items():
-                if k.find("delta") >= 0:
-                    try:
-                        substate[k] = substate[k[:-6]] - old_vars[k[:-6]]
-                    except:
-                        # This will fail on strings and stuff
-                        pass
+
+            self._update_builtins(substate, old_vars)
             if failed_validators := self._validate_variables(substate):
                 raise OMError(
                     f"Validators {failed_validators} failed for variables {_print_dict(substate)}"
@@ -359,49 +374,72 @@ class Graph(object):
         for game in trainer.get_game():
             ti, to = defaultdict(list), defaultdict(list)
 
+            old_vars = None
+            allowed_to_change = None
             invalid_rows = set()
-            for i, row in game.journal.df.iterrows():
-                # TODO: Compute deltas and steps, overwriting what's there, if anything
+            for i, row in game.journal.df.iterrows():                
+                # Construct substate
+                substate = copy.deepcopy(row)
+                # Overwrite built-ins
+                substate.update(self._update_builtins(substate, old_vars))
+                old_vars = copy.deepcopy(substate)
 
                 # state models training data
-                state = row["State"]
-                action = row["Action"]
-                model_name = self.states[state]
-                model_metadata = self.model_metadata_by_name[model_name]
-                needed_variables = model_metadata.input
-                variables = {k: v for k, v in row.items() if k in needed_variables}
-                ti[state].append(variables)
-                to[state].append(action)
+                state_name = row["State"]
+                action_name = row["Action"]                
+                needed_variables = self.states[state_name].metadata.input
+                restricted_vars = {k: v for k, v in substate.items() if k in needed_variables}
+                ti[state].append((i, restricted_vars))
+                to[state].append((i, action_name))
 
                 # update models training data
-                updates = self.updates_by_action[action]
-                for update in updates:
-                    continue
-# .........................
+                for update in self.actions[action_name].updates:
+                    needed_variables = update.metadata.input
+                    restricted_vars = {k: v for k, v in substate.items() if k in needed_variables}
+                    ti[update].append((i, restricted_vars))
+                    to[update].append((i, [substate[t] for t in update.targets]))
                 
                 # Mark rows that are invalid
                 if state not in self.states:
                     invalid_rows.add(i)
-                known_variables = self.built_in | self.variables | self.contexts
-                if self._validate_variables(known_variables):
+                if self._validate_variables(substate):
                     invalid_rows.add(i)
-                # TODO: Check that no variable is changing without permission
+                    invalid_rows.add(i-1)
+                if action_name not in self.states[state].reachable_actions:
+                    invalid_rows.add(i)
+                    invalid_rows.add(i+1)
+                if allowed_to_change:
+                    for k, v in substate.items():
+                        if v != old_vars[k] and k not in allowed_to_change:
+                            invalid_rows.add(i)
+                            invalid_rows.add(i-1)
+
+                # Track which variables are allowed_to_change from here for next go-around
+                allowed_to_change = list()
+                for update in self.actions[action_name].updates:
+                    allowed_to_change += update.targets
 
             # Copy valid rows
+            any_error = len(invalid_rows) > 0
+            on_error = kwargs.get("on_error", "skip_row")
             for k, v in ti.items():
-                for i, vi in enumerate(v):
-                    if i in invalid_rows or i+1 in invalid_rows:
-                        continue
+                for i, vi in v:
+                    is_error = i in invalid_rows
+                    should_skip = (any_error and on_error == "skip_game") or (is_error and on_error == "skip_row")
+                    if i in invalid_rows:
+                        journal.log_error(row)
+                        if should_skip:
+                            continue
                     training_input[k].append(vi)
                     training_output[k].append(to[k][i])
         
         # Now it's time to train
         for state, model_name in self.states.items():
             materialized_model = self.materialized_models_by_name[model_name]
-            materialized_model.train(training_input_by_state[state], training_output_by_state[state])
+            materialized_model.train(training_input[state], training_output[state])
         for update, target in self.targets_by_update.items():
             materialized_model = self.materialized_models_by_name[update]
-            materialized_model.train(training_input_by_variable[target], training_output_by_variable[target])
+            materialized_model.train(training_input[target], training_output[target])
 
 
 def model_factory(model_registry, metadata: ModelMetadata):
