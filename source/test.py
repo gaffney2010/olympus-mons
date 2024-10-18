@@ -167,7 +167,9 @@ class TestGraphBuilder(unittest.TestCase):
                 "9,B,to_a_from_b,9,3,0",
             ],
         )
-        self.assertDictEqual(final_vars, {"num_b_visits": 4, "num_b_visits_delta": 1, "step": 10})
+        self.assertDictEqual(
+            final_vars, {"num_b_visits": 4, "num_b_visits_delta": 1, "step": 10}
+        )
 
     def test_starting_state_is_set(self):
         with self.assertRaisesRegex(om.OMError, "No starting state specified"):
@@ -372,7 +374,8 @@ class TestGraphBuilder(unittest.TestCase):
 
     def test_variable_validator(self):
         with self.assertRaisesRegex(
-            om.OMError, "Validators \[X < 3\] failed for variables {X: 3, X_delta: 1, step: 3}"
+            om.OMError,
+            "Validators \[X < 3\] failed for variables {X: 3, X_delta: 1, step: 3}",
         ):
             _ = (
                 om.GraphBuilder("TEST")
@@ -396,13 +399,15 @@ class TestGraphBuilder(unittest.TestCase):
             .Build(n_sims=1)
         )
         with self.assertRaisesRegex(
-            om.OMError, "Validators \[X < 3\] failed for variables {X: 4, X_delta: 0, step: 0}"
+            om.OMError,
+            "Validators \[X < 3\] failed for variables {X: 4, X_delta: 0, step: 0}",
         ):
             graph.sim(context={"X": 4})
 
     def test_failed_to_evaluate_expression(self):
         with self.assertRaisesRegex(
-            om.OMError, "Validators \[X > 3\] failed for variables {X: None, X_delta: 0, step: 0}"
+            om.OMError,
+            "Validators \[X > 3\] failed for variables {X: None, X_delta: 0, step: 0}",
         ):
             _ = (
                 om.GraphBuilder("TEST")
@@ -498,9 +503,7 @@ class TestGraphBuilder(unittest.TestCase):
             )
 
     def test_not_define_variables_and_contexts(self):
-        with self.assertRaisesRegex(
-            om.OMError, "X is redefined"
-        ):
+        with self.assertRaisesRegex(om.OMError, "X is redefined"):
             _ = (
                 om.GraphBuilder("TEST")
                 .set_starting_state("A")

@@ -10,9 +10,6 @@ import pandas as pd
 import sympy
 
 
-# TODO: Revisit these types
-Model = Any
-VariableValue = Any
 ActionOrVariable = Any
 
 NOT_TRAINABLE_SENTINEL = "OM_NOT_TRAINABLE"
@@ -37,9 +34,15 @@ class Journal(object):
         self.raw = defaultdict(list)
         self.errors = list()
 
-    def _record_error(self, error: Dict) -> None:
-        # TODO: Better journal loggoing
-        self.errors.append(error)
+    def _record_error(self, game_num: int, row_num: int, error: Dict, msg: str) -> None:
+        self.errors.append(
+            {
+                "game_num": game_num,
+                "row_num": row_num,
+                "errant row": error,
+                "error": msg,
+            }
+        )
 
     def _add(self, action: ActionOrVariable, state: str, variables: Dict) -> None:
         self.raw["State"].append(state)
@@ -58,7 +61,6 @@ class BulkTrainer(object):
 
 
 class PandasBulkTrainer(BulkTrainer):
-
     def get_game(self):
         raise OMError("PandasBulkTrainer must implement get_game()")
 
@@ -176,7 +178,6 @@ class Update(object):
     targets: str = attr.ib()
 
 
-# TODO: Consider using this, can make the eval function a method, and you can specify allow variables
 class Expr(object):
     def __init__(self, expr: str):
         self.expr = expr
@@ -184,13 +185,13 @@ class Expr(object):
             self.symp_expr = sympy.sympify(expr)
         except:
             raise OMError(f"Invalid validator {expr}")
-    
+
     def to_dict(self):
         return {"expr": self.expr}
 
     def extract_variables(self) -> List[str]:
         return list(self.symp_expr.free_symbols)
-    
+
     def evaluate(self, values, allow_errors: bool = True) -> bool:
         """A layer of abstraction to SymPy's eval() function"""
         # Need to strip out Nones otherwise this thing breaks for reasons I don't understand
@@ -364,20 +365,20 @@ class Graph(object):
 
         return substate
 
-    def train(self, trainer: BulkTrainer, **kwargs) -> None:        
+    def train(self, trainer: BulkTrainer, **kwargs) -> None:
         journal = kwargs.get("debug", Journal())
         if not isinstance(journal, Journal):
             raise OMError("Debug mode must be a Journal")
 
         training_input = defaultdict(list)
         training_output = defaultdict(list)
-        for game in trainer.get_game():
+        for game_num, game in enumerate(trainer.get_game()):
             ti, to = defaultdict(list), defaultdict(list)
 
             old_vars = None
             allowed_to_change = None
-            invalid_rows = set()
-            for i, row in game.journal.df.iterrows():                
+            invalid_rows = dict()
+            for i, row in game.journal.df.iterrows():
                 # Construct substate
                 substate = copy.deepcopy(row)
                 # Overwrite built-ins
@@ -386,33 +387,39 @@ class Graph(object):
 
                 # state models training data
                 state_name = row["State"]
-                action_name = row["Action"]                
+                action_name = row["Action"]
                 needed_variables = self.states[state_name].metadata.input
-                restricted_vars = {k: v for k, v in substate.items() if k in needed_variables}
+                restricted_vars = {
+                    k: v for k, v in substate.items() if k in needed_variables
+                }
                 ti[state].append((i, restricted_vars))
                 to[state].append((i, action_name))
 
                 # update models training data
                 for update in self.actions[action_name].updates:
                     needed_variables = update.metadata.input
-                    restricted_vars = {k: v for k, v in substate.items() if k in needed_variables}
+                    restricted_vars = {
+                        k: v for k, v in substate.items() if k in needed_variables
+                    }
                     ti[update].append((i, restricted_vars))
                     to[update].append((i, [substate[t] for t in update.targets]))
-                
+
                 # Mark rows that are invalid
                 if state not in self.states:
-                    invalid_rows.add(i)
+                    invalid_rows[i] = "INVALID_STATE"
                 if self._validate_variables(substate):
-                    invalid_rows.add(i)
-                    invalid_rows.add(i-1)
+                    invalid_rows[i] = "INVALID_VARIABLES"
+                    invalid_rows[i - 1] = "INVALID_VARIABLES_NEXT_ROW"
                 if action_name not in self.states[state].reachable_actions:
-                    invalid_rows.add(i)
-                    invalid_rows.add(i+1)
+                    invalid_rows[i] = "UNREACHABLE_ACTION"
+                    invalid_rows[i + 1] = "UNREACHABLE_ACTION_PREV_ROW"
                 if allowed_to_change:
                     for k, v in substate.items():
                         if v != old_vars[k] and k not in allowed_to_change:
-                            invalid_rows.add(i)
-                            invalid_rows.add(i-1)
+                            invalid_rows[i] = "NOT_ALLOWED_TO_CHANGE_VARIABLES"
+                            invalid_rows[
+                                i - 1
+                            ] = "NOT_ALLOWED_TO_CHANGE_VARIABLES_NEXT_ROW"
 
                 # Track which variables are allowed_to_change from here for next go-around
                 allowed_to_change = list()
@@ -425,14 +432,16 @@ class Graph(object):
             for k, v in ti.items():
                 for i, vi in v:
                     is_error = i in invalid_rows
-                    should_skip = (any_error and on_error == "skip_game") or (is_error and on_error == "skip_row")
+                    should_skip = (any_error and on_error == "skip_game") or (
+                        is_error and on_error == "skip_row"
+                    )
                     if i in invalid_rows:
-                        journal.log_error(row)
+                        journal._record_error(game_num, i, row, invalid_rows[i])
                         if should_skip:
                             continue
                     training_input[k].append(vi)
                     training_output[k].append(to[k][i])
-        
+
         # Now it's time to train
         for state, model_name in self.states.items():
             materialized_model = self.materialized_models_by_name[model_name]
@@ -482,7 +491,7 @@ class GraphBuilder(object):
         # These all act on substate
         self.graph.validators = list()
 
-        # TODO: Comment this
+        # Materialize the models, creating instances instead of metadata
         self.graph.materialized_models = dict()
 
     def _mode(self, probe: str, probe_detail: str = "") -> None:
@@ -555,10 +564,13 @@ class GraphBuilder(object):
     def _add_validator(self, validator: str, only_contains: str) -> None:
         validator = Expr(validator)
         for variable in validator.extract_variables():
-            if str(variable) != only_contains and str(variable) != f"{only_contains}_delta":
+            if (
+                str(variable) != only_contains
+                and str(variable) != f"{only_contains}_delta"
+            ):
                 raise OMError(
                     f"Validator {validator} uses variable {variable} which is not {only_contains}.  Use global_validator instead."
-                    )
+                )
         self.graph.validators.append(validator)
 
     def Context(
@@ -584,9 +596,7 @@ class GraphBuilder(object):
 
         return self
 
-    def Variable(
-        self, variable_name: str, **kwargs
-    ) -> "GraphBuilder":
+    def Variable(self, variable_name: str, **kwargs) -> "GraphBuilder":
         self._mode("Variable", variable_name)
         if variable_name.find("delta") != -1:
             raise OMError(f"Variable {variable_name} cannot contain delta")
@@ -607,7 +617,8 @@ class GraphBuilder(object):
         return self
 
     def _valiadate_metadata(
-        self, model_metadata: ModelMetadata,
+        self,
+        model_metadata: ModelMetadata,
     ) -> ModelMetadata:
         if not isinstance(model_metadata, ModelMetadata):
             raise OMError(f"Model {model_metadata} must be a Model")
@@ -627,10 +638,9 @@ class GraphBuilder(object):
         self._mode("State", state_name)
         if "model" not in kwargs:
             raise OMError(f"State {state_name} doesn't specify a model")
-        
+
         self.graph.states[state_name] = State(
-            name=state_name,
-            metadata=self._valiadate_metadata(kwargs["model"])
+            name=state_name, metadata=self._valiadate_metadata(kwargs["model"])
         )
 
         return self
@@ -644,15 +654,20 @@ class GraphBuilder(object):
         self.graph.states[on_state].reachable_actions.append(action_name)
 
         self.graph.actions[action_name] = Action(
-            name=action_name,
-            next_state=kwargs["next_state"]
+            name=action_name, next_state=kwargs["next_state"]
         )
 
         return self
 
     def _get_update_name(self, var_names: List[str]) -> str:
         # This has to be universally unique
-        return "::".join(self.mode_detail) + ":" + ",".join(var_names) + "?" + str(random.randint(0, 1000000))
+        return (
+            "::".join(self.mode_detail)
+            + ":"
+            + ",".join(var_names)
+            + "?"
+            + str(random.randint(0, 1000000))
+        )
 
     def update(
         self, variable_names: Union[str, List[str]], model: ModelMetadata, **kwargs
@@ -712,11 +727,18 @@ class GraphBuilder(object):
         # We want to make sure that the models all return the correct values
         n_sims = kwargs.get("n_sims", 100)
         for _ in range(n_sims):
-            for name, state_or_update in dict(self.graph.states, **self.graph.updates).items():
-                self.graph.materialized_models[name] = model_factory(self.graph.model_registry, state_or_update.metadata)
+            for name, state_or_update in dict(
+                self.graph.states, **self.graph.updates
+            ).items():
+                self.graph.materialized_models[name] = model_factory(
+                    self.graph.model_registry, state_or_update.metadata
+                )
             self.graph.sim(untrained_mode=True)
 
-        # TODO: Make sure I check that updates and states are uniquely named
-        for name, state_or_update in dict(self.graph.states, **self.graph.updates).items():
-            self.graph.materialized_models[name] = model_factory(self.graph.model_registry, state_or_update.metadata)
+        for name, state_or_update in dict(
+            self.graph.states, **self.graph.updates
+        ).items():
+            self.graph.materialized_models[name] = model_factory(
+                self.graph.model_registry, state_or_update.metadata
+            )
         return self.graph
