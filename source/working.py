@@ -1,3 +1,4 @@
+from collections import defaultdict
 import random
 
 import graph as om
@@ -47,21 +48,24 @@ class SplitA(om.Model):
         super().__init__(**kwargs)
 
     def sim(self, input):
-        assert self.is_fit
+        if not self.is_fit:
+            raise om.UntrainedException()
         if random.random() < self.decay_factor ** input["num_b_visits"]:
             return "to_b"
         return "to_c"
 
     def train(self, input, output):
-        count_by_num_b_visits = dict()
-        goto_b_by_num_b_visits = dict()
+        count_by_num_b_visits = defaultdict(int)
+        goto_b_by_num_b_visits = defaultdict(int)
         for i, o in zip(input, output):
             count_by_num_b_visits[i["num_b_visits"]] += 1
-            if "B" == o:
+            if "to_b" == o:
                 goto_b_by_num_b_visits[i["num_b_visits"]] += 1
 
         self.decay_factor = 0
         for k, v in goto_b_by_num_b_visits.items():
+            if k == 0:
+                continue
             tot = count_by_num_b_visits[k]
             weight = tot / len(output)
             self.decay_factor += weight * (v / tot) ** (1 / k)
@@ -88,25 +92,35 @@ trainable_graph = (
 )
 
 
-class MyGraphGenerator(om.PandasBulkTrainer):
-    def get_game(self):
-        global graph
-        for _ in range(100):
-            journal = om.Journal()
-            graph.sim(debug=journal, context={"total_steps": 100})
-            yield om.PandasDatum(journal.df, context={"total_steps": 100})
+for decay_factor in (0.2, 0.4, 0.6, 0.8):
 
+    class MyGraphGenerator(om.PandasBulkTrainer):
+        def get_game(self):
+            global graph
+            for _ in range(100):
+                journal = om.Journal()
+                graph.sim(
+                    debug=journal,
+                    context={"total_steps": 100, "decay_factor": decay_factor},
+                )
+                yield om.PandasDatum(
+                    journal.df,
+                    context={"total_steps": 100, "decay_factor": decay_factor},
+                    game_id=_,
+                )
 
-trainable_graph.train(MyGraphGenerator())
-
+    trainable_graph.train(MyGraphGenerator())
+    print("HELLO")
+    print(decay_factor)
+    print(trainable_graph.materialized_models["A"].decay_factor)
 
 # print(graph.model_args_by_state)
 # print(graph.reachable_actions_from_state)
 
-random.seed(4)
-print("HELLO WORLD")
-print(graph.name)
-journal = om.Journal()
-print(graph.sim(debug=journal, context={"total_steps": 10}))
-print(journal.df)
+# random.seed(4)
+# print("HELLO WORLD")
+# print(graph.name)
+# journal = om.Journal()
+# print(graph.sim(debug=journal, context={"total_steps": 10}))
+# print(journal.df)
 # graph.draw()

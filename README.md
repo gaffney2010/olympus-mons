@@ -275,7 +275,8 @@ class SplitA(om.Model):
         super().__init__(**kwargs)
 
     def sim(self, input):
-        assert(self.is_fit)
+        if not self.is_fit:
+            raise om.UntrainedException()
         if random.random() < self.decay_factor**input["num_b_visits"]:
             return "to_b"
         return "to_c"
@@ -285,11 +286,13 @@ class SplitA(om.Model):
         goto_b_by_num_b_visits = dict()
         for i, o in zip(input, output):
             count_by_num_b_visits[i["num_b_visits"]] += 1
-            if "B" == o:
+            if "to_b" == o:
                 goto_b_by_num_b_visits[i["num_b_visits"]] += 1
 
         self.decay_factor = 0
         for k, v in goto_b_by_num_b_visits.items():
+            if k == 0:
+                continue
             tot = count_by_num_b_visits[k]
             weight = tot / len(output)
             self.decay_factor += weight * (v / tot) ** (1/k)
@@ -321,6 +324,7 @@ Don't worry too much about the math of the `train` function; it's not even a ver
 - `train` takes as arguments two equal length lists.  The first, `input`, is a list of dicts that look identical to the input of `sim`.  The second, `output`, is a list of values that look identical to the output of `sim`.
 - We check ourselves if the model is trained before using it.  We saw above that sims can be done without training.  It's up to the application side to determine if that should be allow.
 - Note that `IncNumBVisits` gets "trained" too, but the default `train` function on `om.Model` does nothing.
+- We need to raise an `om.UntrainedException` on an untrained model so that this will get passed over on graph-building step. 
 
 OM uses a Bring-Your-Own-Model approach.  So any modeling you want to do you have to build yourself.  Often this will just mean wrapping models from sklearn, but we didn't want to depend on that complex, ever-evolving library directly.
 
@@ -343,6 +347,21 @@ A few notes:
 - The name PandasBulkTrainer means that the graph must be trained in bulk.  That is all data must be held in memory at the same time.  This is the only supported method right now.  But if your training set is quite large, this could pose problems.
 - Trainers must be generators, meaning that they `yield` simulations as they go.  `MyGraphGenerator` generates 100 total games.
 - Note that you have to specify any non-default context.
+
+We can look at the decay_factor after training.
+
+```python
+    print(trainable_graph.materialized_models["A"].decay_factor)
+```
+
+Our clumsy training function did a pretty good job.
+
+| Actual | Fitted |
+|--------|--------|
+| 0.2    | 0.197  |
+| 0.4    | 0.373  |
+| 0.6    | 0.589  |
+| 0.8    | 0.780  |
 
 ### Observation and Saving
 

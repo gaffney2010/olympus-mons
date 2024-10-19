@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 import copy
 import random
 from typing import Any, Dict, List, Optional, Union
@@ -20,6 +20,10 @@ class OMError(AssertionError):
     pass
 
 
+class UntrainedException(AssertionError):
+    pass
+
+
 def _print_dict(d: Dict) -> None:
     """Alphabetizes dicts for predictable error messages."""
     result = list()
@@ -34,10 +38,10 @@ class Journal(object):
         self.raw = defaultdict(list)
         self.errors = list()
 
-    def _record_error(self, game_num: int, row_num: int, error: Dict, msg: str) -> None:
+    def _record_error(self, game_id: int, row_num: int, error: Dict, msg: str) -> None:
         self.errors.append(
             {
-                "game_num": game_num,
+                "game_id": game_id,
                 "row_num": row_num,
                 "errant row": error,
                 "error": msg,
@@ -66,11 +70,12 @@ class PandasBulkTrainer(BulkTrainer):
 
 
 class PandasDatum(object):
-    def __init__(self, df: pd.DataFrame, context: Dict = None):
+    def __init__(self, df: pd.DataFrame, context: Dict = None, game_id: str = "NO_ID"):
         if not context:
             context = dict()
         self.df = df
         self.context = context
+        self.game_id = game_id
 
 
 class Model(object):
@@ -311,9 +316,16 @@ class Graph(object):
                 )
 
             # Run the current model
-            if (
-                action_name := self._sim_model_by_name(state_name, substate, **kwargs)
-            ) == NOT_TRAINABLE_SENTINEL:
+            try:
+                if (
+                    action_name := self._sim_model_by_name(
+                        state_name, substate, **kwargs
+                    )
+                ) == NOT_TRAINABLE_SENTINEL:
+                    action_name = random.choice(
+                        self.states[state_name].reachable_actions
+                    )
+            except UntrainedException:
                 action_name = random.choice(self.states[state_name].reachable_actions)
 
             if action_name not in self.states[state_name].reachable_actions:
@@ -370,15 +382,25 @@ class Graph(object):
         if not isinstance(journal, Journal):
             raise OMError("Debug mode must be a Journal")
 
+        TrainingDatum = namedtuple(
+            "TrainingDatum",
+            [
+                "model_name",
+                "input",
+                "output",
+                "index",
+            ],
+        )
+
         training_input = defaultdict(list)
         training_output = defaultdict(list)
-        for game_num, game in enumerate(trainer.get_game()):
-            ti, to = defaultdict(list), defaultdict(list)
+        for game in trainer.get_game():
+            training_data = []
 
-            old_vars = None
+            old_vars = {}
             allowed_to_change = None
             invalid_rows = dict()
-            for i, row in game.journal.df.iterrows():
+            for i, row in game.df.iterrows():
                 # Construct substate
                 substate = copy.deepcopy(row)
                 # Overwrite built-ins
@@ -392,25 +414,38 @@ class Graph(object):
                 restricted_vars = {
                     k: v for k, v in substate.items() if k in needed_variables
                 }
-                ti[state].append((i, restricted_vars))
-                to[state].append((i, action_name))
+                training_data.append(
+                    TrainingDatum(
+                        model_name=state_name,
+                        input=restricted_vars,
+                        output=action_name,
+                        index=i,
+                    )
+                )
 
                 # update models training data
-                for update in self.actions[action_name].updates:
+                for update_name in self.actions[action_name].updates:
+                    update = self.updates[update_name]
                     needed_variables = update.metadata.input
                     restricted_vars = {
                         k: v for k, v in substate.items() if k in needed_variables
                     }
-                    ti[update].append((i, restricted_vars))
-                    to[update].append((i, [substate[t] for t in update.targets]))
+                    training_data.append(
+                        TrainingDatum(
+                            model_name=update_name,
+                            input=restricted_vars,
+                            output=[substate[t] for t in update.targets],
+                            index=i,
+                        )
+                    )
 
                 # Mark rows that are invalid
-                if state not in self.states:
+                if state_name not in self.states:
                     invalid_rows[i] = "INVALID_STATE"
                 if self._validate_variables(substate):
                     invalid_rows[i] = "INVALID_VARIABLES"
                     invalid_rows[i - 1] = "INVALID_VARIABLES_NEXT_ROW"
-                if action_name not in self.states[state].reachable_actions:
+                if action_name not in self.states[state_name].reachable_actions:
                     invalid_rows[i] = "UNREACHABLE_ACTION"
                     invalid_rows[i + 1] = "UNREACHABLE_ACTION_PREV_ROW"
                 if allowed_to_change:
@@ -423,32 +458,38 @@ class Graph(object):
 
                 # Track which variables are allowed_to_change from here for next go-around
                 allowed_to_change = list()
-                for update in self.actions[action_name].updates:
+                for update_name in self.actions[action_name].updates:
+                    update = self.updates[update_name]
                     allowed_to_change += update.targets
 
             # Copy valid rows
             any_error = len(invalid_rows) > 0
             on_error = kwargs.get("on_error", "skip_row")
-            for k, v in ti.items():
-                for i, vi in v:
-                    is_error = i in invalid_rows
-                    should_skip = (any_error and on_error == "skip_game") or (
-                        is_error and on_error == "skip_row"
+            for td in training_data:
+                is_error = td.index in invalid_rows
+                should_skip = (any_error and on_error == "skip_game") or (
+                    is_error and on_error == "skip_row"
+                )
+                if should_skip:
+                    continue
+                if td.index in invalid_rows:
+                    journal._record_error(
+                        game.game_id, td.index, row, invalid_rows[td.index]
                     )
-                    if i in invalid_rows:
-                        journal._record_error(game_num, i, row, invalid_rows[i])
-                        if should_skip:
-                            continue
-                    training_input[k].append(vi)
-                    training_output[k].append(to[k][i])
+                training_input[td.model_name].append(td.input)
+                training_output[td.model_name].append(td.output)
 
         # Now it's time to train
-        for state, model_name in self.states.items():
-            materialized_model = self.materialized_models_by_name[model_name]
-            materialized_model.train(training_input[state], training_output[state])
-        for update, target in self.targets_by_update.items():
-            materialized_model = self.materialized_models_by_name[update]
-            materialized_model.train(training_input[target], training_output[target])
+        for state_name, _ in self.states.items():
+            materialized_model = self.materialized_models[state_name]
+            materialized_model.train(
+                training_input[state_name], training_output[state_name]
+            )
+        for update_name, _ in self.updates.items():
+            materialized_model = self.materialized_models[update_name]
+            materialized_model.train(
+                training_input[update_name], training_output[update_name]
+            )
 
 
 def model_factory(model_registry, metadata: ModelMetadata):
