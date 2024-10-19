@@ -1,8 +1,53 @@
+import io
 import random
-from typing import List
+from typing import Any, Dict, List, Optional
 import unittest
 
+import pandas as pd
+
 import graph as om
+
+
+class MockGenerator(om.PandasBulkTrainer):
+    def __init__(self, csv: List[str], **kwargs):
+        self.context = kwargs.get("context", {})
+        self.single_game = pd.read_csv(io.StringIO("\n".join(csv)))
+        self._second_game = None
+
+    def second_game(self, csv: List[str]) -> None:
+        self._second_game = pd.read_csv(io.StringIO("\n".join(csv)))
+
+    def get_game(self):
+        yield om.PandasDatum(
+            self.single_game,
+            context=self.context,
+        )
+        if self._second_game is not None:
+            yield om.PandasDatum(
+                self._second_game,
+                context=self.context,
+            )
+
+
+class MockTrainable(om.Model):
+    def __init__(
+        self,
+        name: str,
+        received_input: List,
+        received_output: List,
+        input: Optional[List] = None,
+        **kwargs
+    ):
+        self.received_input = received_input
+        self.received_output = received_output
+        super().__init__(name="MockModel", input=input, **kwargs)
+
+    def sim(self, input: Dict) -> Any:
+        raise om.UntrainedException("MockTrainable is not meant for running sim.")
+
+    def train(self, inputs: List, outputs: List) -> None:
+        self.received_input.extend(inputs)
+        self.received_output.extend(outputs)
 
 
 class TestGraphBuilder(unittest.TestCase):
@@ -169,6 +214,182 @@ class TestGraphBuilder(unittest.TestCase):
         )
         self.assertDictEqual(
             final_vars, {"num_b_visits": 4, "num_b_visits_delta": 1, "step": 10}
+        )
+
+    def test_happy_path_training(self):
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+
+        trainable_graph = (
+            om.GraphBuilder("Three Node")
+            .set_starting_state("A")
+            .set_end_condition("step >= 10")
+            .RegisterModel("MockModel", MockTrainable)
+            .State(
+                "A",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": a_input, "received_output": a_output},
+                ),
+            )
+            .Action("to_b_from_a", next_state="B")
+            .Action("to_c_from_a", next_state="C")
+            .State(
+                "B",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": b_input, "received_output": b_output},
+                ),
+            )
+            .Action("to_a_from_b", next_state="A")
+            .Action("to_c_from_b", next_state="C")
+            .State(
+                "C",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": c_input, "received_output": c_output},
+                ),
+            )
+            .Action("to_a_from_c", next_state="A")
+            .Action("to_b_from_c", next_state="B")
+            .Build()
+        )
+
+        trainable_graph.train(
+            MockGenerator(
+                [
+                    "State,Action,step",
+                    "A,to_b_from_a,0",
+                    "B,to_c_from_b,1",
+                    "C,to_b_from_c,2",
+                    "B,to_c_from_b,3",
+                    "C,to_a_from_c,4",
+                    "A,to_b_from_a,5",
+                    "B,to_c_from_b,6",
+                    "C,to_b_from_c,7",
+                    "B,to_a_from_b,8",
+                    "A,to_c_from_a,9",
+                ]
+            )
+        )
+
+        self.assertListEqual(
+            a_input,
+            [{"step": 0}, {"step": 5}, {"step": 9}],
+        )
+        self.assertListEqual(
+            a_output,
+            ["to_b_from_a", "to_b_from_a", "to_c_from_a"],
+        )
+        self.assertListEqual(
+            b_input,
+            [{"step": 1}, {"step": 3}, {"step": 6}, {"step": 8}],
+        )
+        self.assertListEqual(
+            b_output,
+            ["to_c_from_b", "to_c_from_b", "to_c_from_b", "to_a_from_b"],
+        )
+        self.assertListEqual(
+            c_input,
+            [{"step": 2}, {"step": 4}, {"step": 7}],
+        )
+        self.assertListEqual(
+            c_output,
+            ["to_b_from_c", "to_a_from_c", "to_b_from_c"],
+        )
+
+    def test_happy_path_training_2_games(self):
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+
+        trainable_graph = (
+            om.GraphBuilder("Three Node")
+            .set_starting_state("A")
+            .set_end_condition("step >= 5")
+            .RegisterModel("MockModel", MockTrainable)
+            .State(
+                "A",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": a_input, "received_output": a_output},
+                ),
+            )
+            .Action("to_b_from_a", next_state="B")
+            .Action("to_c_from_a", next_state="C")
+            .State(
+                "B",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": b_input, "received_output": b_output},
+                ),
+            )
+            .Action("to_a_from_b", next_state="A")
+            .Action("to_c_from_b", next_state="C")
+            .State(
+                "C",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": c_input, "received_output": c_output},
+                ),
+            )
+            .Action("to_a_from_c", next_state="A")
+            .Action("to_b_from_c", next_state="B")
+            .Build()
+        )
+
+        generator = MockGenerator(
+            [
+                "State,Action,step",
+                "A,to_b_from_a,0",
+                "B,to_c_from_b,1",
+                "C,to_b_from_c,2",
+                "B,to_c_from_b,3",
+                "C,to_a_from_c,4",
+            ]
+        )
+        generator.second_game(
+            [
+                "State,Action,step",
+                "A,to_b_from_a,5",
+                "B,to_c_from_b,6",
+                "C,to_b_from_c,7",
+                "B,to_a_from_b,8",
+                "A,to_c_from_a,9",
+            ]
+        )
+        trainable_graph.train(generator)
+
+        self.assertListEqual(
+            a_input,
+            [{"step": 0}, {"step": 0}, {"step": 4}],
+        )
+        self.assertListEqual(
+            a_output,
+            ["to_b_from_a", "to_b_from_a", "to_c_from_a"],
+        )
+        self.assertListEqual(
+            b_input,
+            [{"step": 1}, {"step": 3}, {"step": 1}, {"step": 3}],
+        )
+        self.assertListEqual(
+            b_output,
+            ["to_c_from_b", "to_c_from_b", "to_c_from_b", "to_a_from_b"],
+        )
+        self.assertListEqual(
+            c_input,
+            [{"step": 2}, {"step": 4}, {"step": 2}],
+        )
+        self.assertListEqual(
+            c_output,
+            ["to_b_from_c", "to_a_from_c", "to_b_from_c"],
         )
 
     def test_starting_state_is_set(self):
@@ -567,10 +788,6 @@ class TestGraphBuilder(unittest.TestCase):
 
     def test_passing_non_journal_to_train_fails(self):
         pass
-
-    def test_fail_this_test(self):
-        with self.assertRaisesRegex(om.OMError, "X"):
-            _ = "HELLO"
 
 
 if __name__ == "__main__":

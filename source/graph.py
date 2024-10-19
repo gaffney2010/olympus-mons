@@ -84,7 +84,7 @@ class Model(object):
         self.name = name
 
     def sim(self, input: Dict) -> ActionOrVariable:
-        raise OMError("Model {self.name} must implement sim().")
+        raise OMError(f"Model {self.name} must implement sim().")
 
     def train(self, inputs: List[Dict], outputs: List[ActionOrVariable]) -> Any:
         return NOT_TRAINABLE_SENTINEL
