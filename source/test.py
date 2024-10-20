@@ -309,6 +309,56 @@ class TestGraphBuilder(unittest.TestCase):
             ["to_b_from_c", "to_a_from_c", "to_b_from_c"],
         )
 
+    def test_happy_path_training_with_update(self):
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        x_input, x_output = [], []
+        trainable_graph = (
+            om.GraphBuilder("Three Node")
+            .set_starting_state("A")
+            .set_end_condition(f"step >= 5")
+            .Variable("x", initially=0)
+            .RegisterModel("MockModel", MockTrainable)
+            .State(
+                "A",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": a_input, "received_output": a_output},
+                ),
+            )
+            .Action("to_a_from_a", next_state="A")
+            .update("x", model=om.UDM("MockModel", input=["x"], model_args={"received_input": x_input, "received_output": x_output}))
+            .Action("to_b_from_a", next_state="B")
+            .State(
+                "B",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": b_input, "received_output": b_output},
+                ),
+            )
+            .Action("to_a_from_b", next_state="A")
+            .Action("to_b_from_b", next_state="B")
+            .Build()
+        )
+        
+        trainable_graph.train(
+            MockGenerator(
+                [
+                    "State,Action,step,x",
+                    "A,to_a_from_a,0,0",
+                    "A,to_b_from_a,1,1",
+                    "B,to_a_from_b,2,1",
+                    "A,to_a_from_a,3,1",
+                    "A,to_b_from_a,4,2",
+                ]
+            )
+        )
+
+        self.assertListEqual(x_input, [{"x": 0}, {"x": 1}])
+        self.assertListEqual(x_output, [[1], [2]])
+
     def test_happy_path_training_2_games(self):
         a_input, a_output = [], []
         b_input, b_output = [], []
@@ -1029,7 +1079,63 @@ class TestGraphBuilder(unittest.TestCase):
         journal = om.Journal()
         trainable_graph.train(generator, debug=journal)
         self.assertListEqual([(e["error"], e["row_num"]) for e in journal.errors], [
-            ('INVALID_EXIT', 1),
+            ('EARLY_EXIT', 1),
+        ])
+
+    def test_variable_only_updated_when_allowed(self):
+        pass
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        x_input, x_output = [], []
+        trainable_graph = (
+            om.GraphBuilder("Three Node")
+            .set_starting_state("A")
+            .set_end_condition(f"step >= 5")
+            .Variable("x", initially=0)
+            .RegisterModel("MockModel", MockTrainable)
+            .State(
+                "A",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": a_input, "received_output": a_output},
+                ),
+            )
+            .Action("to_a_from_a", next_state="A")
+            .update("x", model=om.UDM("MockModel", input=["x"], model_args={"received_input": x_input, "received_output": x_output}))
+            .Action("to_b_from_a", next_state="B")
+            .State(
+                "B",
+                model=om.UDM(
+                    "MockModel",
+                    input=["step"],
+                    model_args={"received_input": b_input, "received_output": b_output},
+                ),
+            )
+            .Action("to_a_from_b", next_state="A")
+            .Action("to_b_from_b", next_state="B")
+            .Build()
+        )
+        
+        print("HELLLLLOOOOO")
+        journal = om.Journal()
+        trainable_graph.train(
+            MockGenerator(
+                [
+                    "State,Action,step,x",
+                    "A,to_a_from_a,0,0",
+                    "A,to_b_from_a,1,1",
+                    "B,to_a_from_b,2,2",
+                    "A,to_a_from_a,3,2",
+                    "A,to_b_from_a,4,3",
+                ]
+            ),
+            debug=journal,
+        )
+        print("============")
+        self.assertListEqual([(e["error"], e["row_num"]) for e in journal.errors], [
+            ('EARLY_EXIT', 1),
+        ])
 
 if __name__ == "__main__":
     unittest.main()

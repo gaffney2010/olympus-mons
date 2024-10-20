@@ -402,15 +402,30 @@ class Graph(object):
             if game.df.iloc[0]["State"] != self.starting_state:
                 invalid_rows[-1] = "INVALID_STARTING_STATE"
                 journal._record_error(game.game_id, -1, {}, "INVALID_STARTING_STATE")
+            # Check that the starting variables are correct
+            # TODO:
 
             old_vars = {}
+            old_updates = {}
             allowed_to_change = None
             for i, row in game.df.iterrows():
                 # Construct substate
                 substate = copy.deepcopy(row)
                 # Overwrite built-ins
                 substate.update(self._update_builtins(substate, old_vars))
-                old_vars = copy.deepcopy(substate)
+                old_vars = copy.deepcopy(substate)  # TODO: This has to be moved
+
+                # Handle some old business
+                for update_name, restricted_vars in old_updates.items():
+                    training_data.append(
+                        TrainingDatum(
+                            model_name=update_name,
+                            input=restricted_vars,
+                            output=[substate[t] for t in update.targets],
+                            index=i-1,
+                        )
+                    )
+                old_updates = {}
 
                 # state models training data
                 state_name = row["State"]
@@ -446,14 +461,7 @@ class Graph(object):
                         restricted_vars = {
                             k: v for k, v in substate.items() if k in needed_variables
                         }
-                        training_data.append(
-                            TrainingDatum(
-                                model_name=update_name,
-                                input=restricted_vars,
-                                output=[substate[t] for t in update.targets],
-                                index=i,
-                            )
-                        )
+                        old_updates[update_name] = restricted_vars
 
                 # Mark rows that are invalid
                 if state_name not in self.states:
@@ -462,16 +470,20 @@ class Graph(object):
                     invalid_rows[i] = "INVALID_VARIABLES"
                     if i - 1 not in invalid_rows:
                         invalid_rows[i - 1] = "INVALID_VARIABLES_NEXT_ROW"
+                elif self.end_condition.evaluate(substate):
+                    invalid_rows[i] = "EARLY_EXIT"
                 elif action_name not in self.states[state_name].reachable_actions:
                     invalid_rows[i] = "UNREACHABLE_ACTION"
                     invalid_rows[i + 1] = "UNREACHABLE_ACTION_PREV_ROW"
-                elif allowed_to_change:
-                    for k, v in substate.items():
-                        if v != old_vars[k] and k not in allowed_to_change:
-                            invalid_rows[i] = "NOT_ALLOWED_TO_CHANGE_VARIABLES"
-                            invalid_rows[
-                                i - 1
-                            ] = "NOT_ALLOWED_TO_CHANGE_VARIABLES_NEXT_ROW"
+                else:
+                    # allowed_to_change = None on first row
+                    if allowed_to_change is not None:
+                        for k, v in substate.items():
+                            if v != old_vars[k] and k not in allowed_to_change:
+                                invalid_rows[i] = "NOT_ALLOWED_TO_CHANGE_VARIABLES"
+                                invalid_rows[
+                                    i - 1
+                                ] = "NOT_ALLOWED_TO_CHANGE_VARIABLES_NEXT_ROW"
 
                 # Track which variables are allowed_to_change from here for next go-around
                 allowed_to_change = list()
