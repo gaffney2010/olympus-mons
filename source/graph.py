@@ -396,10 +396,14 @@ class Graph(object):
         training_output = defaultdict(list)
         for game in trainer.get_game():
             training_data = []
+            invalid_rows = dict()
+
+            # Check that starting state is correct
+            if game.df.iloc[0]["State"] != self.starting_state:
+                invalid_rows[-1] = "INVALID_STARTING_STATE"
 
             old_vars = {}
             allowed_to_change = None
-            invalid_rows = dict()
             for i, row in game.df.iterrows():
                 # Construct substate
                 substate = copy.deepcopy(row)
@@ -462,6 +466,11 @@ class Graph(object):
                     update = self.updates[update_name]
                     allowed_to_change += update.targets
 
+            # Check that exit condition is correct
+            substate.update(self._update_builtins(substate, old_vars))
+            if not self.end_condition.evaluate(substate):
+                invalid_rows[i + 1] = "INVALID_EXIT"
+
             # Copy valid rows
             any_error = len(invalid_rows) > 0
             on_error = kwargs.get("on_error", "skip_row")
@@ -470,12 +479,15 @@ class Graph(object):
                 should_skip = (any_error and on_error == "skip_game") or (
                     is_error and on_error == "skip_row"
                 )
-                if should_skip:
-                    continue
                 if td.index in invalid_rows:
                     journal._record_error(
-                        game.game_id, td.index, row, invalid_rows[td.index]
+                        game.game_id,
+                        td.index,
+                        row,
+                        invalid_rows.get(td.index, "ROW_OKAY_GAME_INVLAID"),
                     )
+                if should_skip:
+                    continue
                 training_input[td.model_name].append(td.input)
                 training_output[td.model_name].append(td.output)
 

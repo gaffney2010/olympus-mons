@@ -36,7 +36,7 @@ class MockTrainable(om.Model):
         received_input: List,
         received_output: List,
         input: Optional[List] = None,
-        **kwargs
+        **kwargs,
     ):
         self.received_input = received_input
         self.received_output = received_output
@@ -216,15 +216,13 @@ class TestGraphBuilder(unittest.TestCase):
             final_vars, {"num_b_visits": 4, "num_b_visits_delta": 1, "step": 10}
         )
 
-    def test_happy_path_training(self):
-        a_input, a_output = [], []
-        b_input, b_output = [], []
-        c_input, c_output = [], []
-
+    def _happy_trainable(
+        self, a_input, a_output, b_input, b_output, c_input, c_output, **kwargs
+    ):
         trainable_graph = (
             om.GraphBuilder("Three Node")
             .set_starting_state("A")
-            .set_end_condition("step >= 10")
+            .set_end_condition(f"step >= {kwargs.get('num_steps', 10)}")
             .RegisterModel("MockModel", MockTrainable)
             .State(
                 "A",
@@ -257,6 +255,15 @@ class TestGraphBuilder(unittest.TestCase):
             .Action("to_a_from_c", next_state="A")
             .Action("to_b_from_c", next_state="B")
             .Build()
+        )
+        return trainable_graph
+
+    def test_happy_path_training(self):
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output
         )
 
         trainable_graph.train(
@@ -306,43 +313,8 @@ class TestGraphBuilder(unittest.TestCase):
         a_input, a_output = [], []
         b_input, b_output = [], []
         c_input, c_output = [], []
-
-        trainable_graph = (
-            om.GraphBuilder("Three Node")
-            .set_starting_state("A")
-            .set_end_condition("step >= 5")
-            .RegisterModel("MockModel", MockTrainable)
-            .State(
-                "A",
-                model=om.UDM(
-                    "MockModel",
-                    input=["step"],
-                    model_args={"received_input": a_input, "received_output": a_output},
-                ),
-            )
-            .Action("to_b_from_a", next_state="B")
-            .Action("to_c_from_a", next_state="C")
-            .State(
-                "B",
-                model=om.UDM(
-                    "MockModel",
-                    input=["step"],
-                    model_args={"received_input": b_input, "received_output": b_output},
-                ),
-            )
-            .Action("to_a_from_b", next_state="A")
-            .Action("to_c_from_b", next_state="C")
-            .State(
-                "C",
-                model=om.UDM(
-                    "MockModel",
-                    input=["step"],
-                    model_args={"received_input": c_input, "received_output": c_output},
-                ),
-            )
-            .Action("to_a_from_c", next_state="A")
-            .Action("to_b_from_c", next_state="B")
-            .Build()
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=5
         )
 
         generator = MockGenerator(
@@ -780,13 +752,41 @@ class TestGraphBuilder(unittest.TestCase):
                 .Build(n_sims=1)
             )
 
-    def test_invalid_states_are_not_used(self):
-        pass
-
-    def test_invalid_updates_are_not_used(self):
-        pass
-
     def test_passing_non_journal_to_train_fails(self):
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=5
+        )
+        with self.assertRaisesRegex(om.OMError, "Debug mode must be a Journal"):
+            generator = MockGenerator(
+                [
+                    "State,Action,step",
+                    "A,to_b_from_a,0",
+                    "B,to_c_from_b,1",
+                    "C,to_a_from_c,2",
+                    "A,to_b_from_a,3",
+                    "B,to_c_from_b,4",
+                ]
+            )
+            trainable_graph.train(generator, debug="bogus")
+
+        pass
+
+    def test_ignore_errors_will_pass_bad_values(self):
+        pass
+
+    def test_skip_errors_will_skip_rows(self):
+        pass
+
+    def test_errors_skip_games(self):
+        pass
+
+    def test_errors_with_assert(self):
+        pass
+
+    def test_errors_record_to_journal(self):
         pass
 
 

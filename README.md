@@ -257,6 +257,7 @@ You may wonder why we want all these validators.  In the next section, we will l
 - "record_only":  Must also pass a journal to the the `journal` argument.  It will write error messages to the `error` field.
 - "skip_row":  Will not use the invalid rows in the training data, but assumes the following rows are valid.
 - "skip_graph":  Throw away entire run from starting_state to end_condition.
+- "assert":  Raises an error if any wrong rows are encountered.
 
 ### Training
 
