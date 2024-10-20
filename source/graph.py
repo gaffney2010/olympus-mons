@@ -401,6 +401,7 @@ class Graph(object):
             # Check that starting state is correct
             if game.df.iloc[0]["State"] != self.starting_state:
                 invalid_rows[-1] = "INVALID_STARTING_STATE"
+                journal._record_error(game.game_id, -1, {}, "INVALID_STARTING_STATE")
 
             old_vars = {}
             allowed_to_change = None
@@ -414,45 +415,57 @@ class Graph(object):
                 # state models training data
                 state_name = row["State"]
                 action_name = row["Action"]
-                needed_variables = self.states[state_name].metadata.input
-                restricted_vars = {
-                    k: v for k, v in substate.items() if k in needed_variables
-                }
-                training_data.append(
-                    TrainingDatum(
-                        model_name=state_name,
-                        input=restricted_vars,
-                        output=action_name,
-                        index=i,
-                    )
-                )
-
-                # update models training data
-                for update_name in self.actions[action_name].updates:
-                    update = self.updates[update_name]
-                    needed_variables = update.metadata.input
+                if state_name in self.states:
+                    needed_variables = self.states[state_name].metadata.input
                     restricted_vars = {
                         k: v for k, v in substate.items() if k in needed_variables
                     }
                     training_data.append(
                         TrainingDatum(
-                            model_name=update_name,
+                            model_name=state_name,
                             input=restricted_vars,
-                            output=[substate[t] for t in update.targets],
+                            output=action_name,
+                            index=i,
+                        )
+                    )
+                else:
+                    training_data.append(
+                        TrainingDatum(
+                            model_name="INVALID_STATE",
+                            input=state_name,
+                            output=action_name,
                             index=i,
                         )
                     )
 
+                # update models training data
+                if action_name in self.actions:
+                    for update_name in self.actions[action_name].updates:
+                        update = self.updates[update_name]
+                        needed_variables = update.metadata.input
+                        restricted_vars = {
+                            k: v for k, v in substate.items() if k in needed_variables
+                        }
+                        training_data.append(
+                            TrainingDatum(
+                                model_name=update_name,
+                                input=restricted_vars,
+                                output=[substate[t] for t in update.targets],
+                                index=i,
+                            )
+                        )
+
                 # Mark rows that are invalid
                 if state_name not in self.states:
                     invalid_rows[i] = "INVALID_STATE"
-                if self._validate_variables(substate):
+                elif self._validate_variables(substate):
                     invalid_rows[i] = "INVALID_VARIABLES"
-                    invalid_rows[i - 1] = "INVALID_VARIABLES_NEXT_ROW"
-                if action_name not in self.states[state_name].reachable_actions:
+                    if i - 1 not in invalid_rows:
+                        invalid_rows[i - 1] = "INVALID_VARIABLES_NEXT_ROW"
+                elif action_name not in self.states[state_name].reachable_actions:
                     invalid_rows[i] = "UNREACHABLE_ACTION"
                     invalid_rows[i + 1] = "UNREACHABLE_ACTION_PREV_ROW"
-                if allowed_to_change:
+                elif allowed_to_change:
                     for k, v in substate.items():
                         if v != old_vars[k] and k not in allowed_to_change:
                             invalid_rows[i] = "NOT_ALLOWED_TO_CHANGE_VARIABLES"
@@ -462,17 +475,21 @@ class Graph(object):
 
                 # Track which variables are allowed_to_change from here for next go-around
                 allowed_to_change = list()
-                for update_name in self.actions[action_name].updates:
-                    update = self.updates[update_name]
-                    allowed_to_change += update.targets
+                if action_name in self.actions:
+                    for update_name in self.actions[action_name].updates:
+                        update = self.updates[update_name]
+                        allowed_to_change += update.targets
 
             # Check that exit condition is correct
             substate.update(self._update_builtins(substate, old_vars))
             if not self.end_condition.evaluate(substate):
                 invalid_rows[i + 1] = "INVALID_EXIT"
+                journal._record_error(game.game_id, i+1, {}, "INVALID_EXIT")
 
             # Copy valid rows
             any_error = len(invalid_rows) > 0
+            if any_error and kwargs.get("on_error") == "assert":
+                raise OMError(f"Invalid training rows: {invalid_rows}")
             on_error = kwargs.get("on_error", "skip_row")
             for td in training_data:
                 is_error = td.index in invalid_rows

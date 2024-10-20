@@ -772,22 +772,243 @@ class TestGraphBuilder(unittest.TestCase):
             )
             trainable_graph.train(generator, debug="bogus")
 
-        pass
-
     def test_ignore_errors_will_pass_bad_values(self):
-        pass
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=10
+        )
+            
+        generator = MockGenerator(
+            [
+                "State,Action,step",
+                "A,to_b_from_a,0",
+                "B,to_c_from_b,1",
+                "C,to_d_from_c,2",
+                "C,to_a_from_c,3",
+                "D,to_c_from_a,4",
+                "A,to_b_from_a,5",
+                "B,to_a_from_b,6",
+                "A,to_b_from_a,7",
+                "C,to_c_from_b,8",
+                "A,to_b_from_a,9",
+            ]
+        )
+
+        trainable_graph.train(generator, on_error="ignore")
+
+        self.assertListEqual(
+            a_input,
+            [{"step": 0}, {"step": 5}, {"step": 7}, {"step": 9}],
+        )
+        self.assertListEqual(
+            a_output,
+            ["to_b_from_a", "to_b_from_a", "to_b_from_a", "to_b_from_a"],
+        )
+        self.assertListEqual(
+            b_input,
+            [{"step": 1}, {"step": 6}],
+        )
+        self.assertListEqual(
+            b_output,
+            ["to_c_from_b", "to_a_from_b"],
+        )
+        self.assertListEqual(
+            c_input,
+            [{"step": 2}, {"step": 3}, {"step": 8}],
+        )
+        self.assertListEqual(
+            c_output,
+            ["to_d_from_c", "to_a_from_c", "to_c_from_b"],
+        )
 
     def test_skip_errors_will_skip_rows(self):
-        pass
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=10
+        )
+            
+        generator = MockGenerator(
+            [
+                "State,Action,step",
+                "A,to_b_from_a,0",
+                "B,to_c_from_b,1",
+                "C,to_d_from_c,2",  # Bad action, skip this and next
+                "C,to_a_from_c,3",  # Skip from above
+                "D,to_c_from_a,4",  # Bad state, skip this
+                "A,to_b_from_a,5",
+                "B,to_a_from_b,6",
+                "A,to_b_from_a,7",
+                "C,to_c_from_b,8",  # Bad action, skip this and next
+                "A,to_b_from_a,9",  # Skip from above
+            ]
+        )
+
+        trainable_graph.train(generator, on_error="skip_row")
+
+        self.assertListEqual(
+            a_input,
+            [{"step": 0}, {"step": 5}, {"step": 7}],
+        )
+        self.assertListEqual(
+            a_output,
+            ["to_b_from_a", "to_b_from_a", "to_b_from_a"],
+        )
+        self.assertListEqual(
+            b_input,
+            [{"step": 1}, {"step": 6}],
+        )
+        self.assertListEqual(
+            b_output,
+            ["to_c_from_b", "to_a_from_b"],
+        )
+        self.assertListEqual(
+            c_input,
+            [],
+        )
+        self.assertListEqual(
+            c_output,
+            [],
+        )
 
     def test_errors_skip_games(self):
-        pass
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=10
+        )
+            
+        generator = MockGenerator(
+            [
+                "State,Action,step",
+                "A,to_b_from_a,0",
+                "B,to_c_from_b,1",
+                "C,to_d_from_c,2",  # Bad action, skip this and next
+                "C,to_a_from_c,3",  # Skip from above
+                "D,to_c_from_a,4",  # Bad state, skip this
+                "A,to_b_from_a,5",
+                "B,to_a_from_b,6",
+                "A,to_b_from_a,7",
+                "C,to_c_from_b,8",  # Bad action, skip this and next
+                "A,to_b_from_a,9",  # Skip from above
+            ]
+        )
+
+        trainable_graph.train(generator, on_error="skip_game")
+
+        self.assertListEqual(a_input, [])
+        self.assertListEqual(a_output, [])
+        self.assertListEqual(b_input, [])
+        self.assertListEqual(b_output, [])
+        self.assertListEqual(c_input, [])
+        self.assertListEqual(c_output, [])
 
     def test_errors_with_assert(self):
-        pass
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=10
+        )
+            
+        generator = MockGenerator(
+            [
+                "State,Action,step",
+                "A,to_b_from_a,0",
+                "B,to_c_from_b,1",
+                "C,to_d_from_c,2",  # Bad action, skip this and next
+                "C,to_a_from_c,3",  # Skip from above
+                "D,to_c_from_a,4",  # Bad state, skip this
+                "A,to_b_from_a,5",
+                "B,to_a_from_b,6",
+                "A,to_b_from_a,7",
+                "C,to_c_from_b,8",  # Bad action, skip this and next
+                "A,to_b_from_a,9",  # Skip from above
+            ]
+        )
+
+        with self.assertRaisesRegex(om.OMError, "Invalid training rows: {2: 'UNREACHABLE_ACTION', 3: 'UNREACHABLE_ACTION_PREV_ROW', 4: 'INVALID_STATE', 8: 'UNREACHABLE_ACTION', 9: 'UNREACHABLE_ACTION_PREV_ROW'}"):
+            trainable_graph.train(generator, on_error="assert")
 
     def test_errors_record_to_journal(self):
-        pass
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=10
+        )
+            
+        generator = MockGenerator(
+            [
+                "State,Action,step",
+                "A,to_b_from_a,0",
+                "B,to_c_from_b,1",
+                "C,to_d_from_c,2",  # Bad action, skip this and next
+                "C,to_a_from_c,3",  # Skip from above
+                "D,to_c_from_a,4",  # Bad state, skip this
+                "A,to_b_from_a,5",
+                "B,to_a_from_b,6",
+                "A,to_b_from_a,7",
+                "C,to_c_from_b,8",  # Bad action, skip this and next
+                "A,to_b_from_a,9",  # Skip from above
+            ]
+        )
+
+        journal = om.Journal()
+        trainable_graph.train(generator, debug=journal)
+        self.assertListEqual([(e["error"], e["row_num"]) for e in journal.errors], [
+            ('UNREACHABLE_ACTION', 2),
+            ('UNREACHABLE_ACTION_PREV_ROW', 3),
+            ('INVALID_STATE', 4),
+            ('UNREACHABLE_ACTION', 8),
+            ('UNREACHABLE_ACTION_PREV_ROW', 9),
+        ])
+
+    def test_training_data_starting_state(self):
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=1
+        )
+            
+        generator = MockGenerator(
+            [
+                "State,Action,step",
+                "B,to_a_from_b,0",
+            ]
+        )
+
+        journal = om.Journal()
+        trainable_graph.train(generator, debug=journal)
+        self.assertListEqual([(e["error"], e["row_num"]) for e in journal.errors], [
+            ('INVALID_STARTING_STATE', -1),
+        ])
+    
+    def test_end_condition_not_met(self):
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=10
+        )
+            
+        generator = MockGenerator(
+            [
+                "State,Action,step",
+                "A,to_b_from_a,0",
+            ]
+        )
+
+        journal = om.Journal()
+        trainable_graph.train(generator, debug=journal)
+        self.assertListEqual([(e["error"], e["row_num"]) for e in journal.errors], [
+            ('INVALID_EXIT', 1),
+        ])
 
 
 if __name__ == "__main__":
