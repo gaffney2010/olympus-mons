@@ -1010,6 +1010,26 @@ class TestGraphBuilder(unittest.TestCase):
             ('INVALID_EXIT', 1),
         ])
 
+    def test_end_condition_met_early(self):
+        a_input, a_output = [], []
+        b_input, b_output = [], []
+        c_input, c_output = [], []
+        trainable_graph = self._happy_trainable(
+            a_input, a_output, b_input, b_output, c_input, c_output, num_steps=1
+        )
+            
+        generator = MockGenerator(
+            [
+                "State,Action,step",
+                "A,to_b_from_a,0",
+                "B,to_a_from_b,1",
+            ]
+        )
+
+        journal = om.Journal()
+        trainable_graph.train(generator, debug=journal)
+        self.assertListEqual([(e["error"], e["row_num"]) for e in journal.errors], [
+            ('INVALID_EXIT', 1),
 
 if __name__ == "__main__":
     unittest.main()
